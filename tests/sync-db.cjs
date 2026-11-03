@@ -1,0 +1,57 @@
+const {PGlite}=require('@electric-sql/pglite');
+const fs=require('fs');const assert=require('assert/strict');
+const SHARED='00000000-0000-4000-8000-000000000111';
+const OTHER='00000000-0000-4000-8000-000000000222';
+(async()=>{
+ const db=new PGlite();
+ await db.exec(`create role anon;create role authenticated;create role service_role;
+ create schema auth;grant usage on schema auth to anon,authenticated;
+ create table auth.users(id uuid primary key,email text,email_confirmed_at timestamptz);
+ insert into auth.users values('${SHARED}','2079700358@qq.com',now());
+ `);
+ // Use a UUID return cast, matching Supabase auth.uid().
+ await db.exec(`create or replace function auth.uid() returns uuid language sql stable as $$select (nullif(current_setting('request.jwt.claims',true),'')::jsonb->>'sub')::uuid$$;
+ create schema storage;grant usage on schema storage to anon,authenticated;
+ create table storage.buckets(id text primary key,public boolean);
+ create table storage.objects(id uuid primary key,bucket_id text,name text);
+ insert into storage.buckets values('gallery',true);
+ alter table storage.objects enable row level security;
+ grant select,insert,update,delete on storage.objects to authenticated,anon;
+ create policy old_storage on storage.objects using(true) with check(true);
+ create table public.patients(id text primary key,data jsonb not null,created_at timestamp default now());
+ create table public.roster(id integer primary key,data jsonb not null);
+ create table public.gallery(id text primary key,data jsonb not null,created_at timestamp default now());
+ insert into public.patients(id,data) values('p1','{"id":"p1","name":"Fixture","cobb":5}');
+ insert into public.roster values(1,'[{"name":"Fixture"}]');
+ insert into public.gallery(id,data) values('g1','{"id":"g1","caption":"Fixture"}');
+ grant usage on schema public to anon,authenticated;
+ grant all on public.patients,public.roster,public.gallery to anon,authenticated;
+ create publication supabase_realtime;
+ `);
+ await db.exec(fs.readFileSync(require('path').join(__dirname,'../supabase-auth-rls.sql'),'utf8'));
+ await db.exec(fs.readFileSync(require('path').join(__dirname,'../supabase-sync.sql'),'utf8'));
+ async function asRole(role,uid,fn){await db.exec('begin');try{await db.query("select set_config('request.jwt.claims',$1,true)",[JSON.stringify({sub:uid,role})]);await db.exec('set local role '+role);const r=await fn();await db.exec('commit');return r;}catch(e){await db.exec('rollback');throw e;}}
+ async function commit(changes,revision=null){return asRole('authenticated',SHARED,async()=>{const r=await db.query('select public.scoli_commit($1::jsonb,$2::bigint) as result',[JSON.stringify(changes),revision]);return r.rows[0].result;});}
+ const snap=await asRole('authenticated',SHARED,async()=>(await db.query('select public.scoli_snapshot() as data')).rows[0].data);
+ assert.equal(snap.revision,1);assert.equal(snap.patients.length,1);
+ assert.equal(await asRole('authenticated',OTHER,async()=>(await db.query('select public.scoli_snapshot() as data')).rows[0].data),null);
+ await assert.rejects(asRole('anon',null,()=>db.query('select public.scoli_snapshot()')),/permission denied/);
+ await assert.rejects(asRole('authenticated',OTHER,()=>db.query("select public.scoli_commit('[]'::jsonb)")),/NOT_AUTHORIZED/);
+ const put=(id,data,expected=0)=>({table:'patients',id,op:'put',expected,data});
+ assert.equal((await commit([put('p2',{id:'p2',name:'Device A'})])).revision,2);
+ await assert.rejects(commit([put('p2',{id:'p2',name:'Device B'})]),e=>e.code==='40001');
+ await assert.rejects(commit([put('atomic',{id:'atomic'}),put('p1',{id:'p1'},0)]),e=>e.code==='40001');
+ assert.equal((await db.query("select count(*)::int n from public.patients where id='atomic'")).rows[0].n,0);
+ assert.equal((await db.query('select version::int v from public.scoli_sync_state')).rows[0].v,2);
+ await commit([put('p1',{id:'p1',name:'First edit'},1)]);
+ await assert.rejects(commit([put('p1',{id:'p1',name:'Stale edit'},1)]),e=>e.code==='40001');
+ await assert.rejects(commit([put('batch',{id:'batch'})],1),e=>e.code==='40001');
+ await assert.rejects(asRole('authenticated',SHARED,()=>db.query("update public.patients set data='{}' where id='p1'")),/CLIENT_UPGRADE_REQUIRED/);
+ await assert.rejects(asRole('authenticated',SHARED,()=>db.query("delete from public.patients where id='p1'")),/CLIENT_UPGRADE_REQUIRED/);
+ await assert.rejects(asRole('authenticated',SHARED,()=>db.query('update public.scoli_sync_state set version=version+1')),/CLIENT_UPGRADE_REQUIRED/);
+ await commit([{table:'patients',id:'p2',op:'delete',expected:1}]);
+ assert.equal((await db.query("select count(*)::int n from public.patients where id='p2'")).rows[0].n,0);
+ assert.equal((await db.query("select data->>'name' name from public.patients where id='p1'")).rows[0].name,'First edit');
+ assert.equal((await db.query("select count(*)::int n from pg_publication_tables where pubname='supabase_realtime' and tablename='scoli_sync_state'")).rows[0].n,1);
+ await db.close();console.log('PASS PostgreSQL: migration syntax, invoker/RLS access, row CAS, stale batch rejection, atomic rollback, old-client rejection, guarded deletion and revision-only publication. Isolated fixtures only.');
+})().catch(e=>{console.error(e);process.exit(1)});
