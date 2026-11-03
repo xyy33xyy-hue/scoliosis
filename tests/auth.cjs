@@ -15,7 +15,7 @@ const path=require('path');
    return {
     auth:{getUser:async()=>result(),onAuthStateChange:fn=>{window.authCallback=fn;},
       signInWithPassword:async({password})=>{window.calls.push('login'); if(password==='invalid')return {error:{message:'invalid'}}; window.mode='shared'; options.auth.storage.setItem('scoli-auth-v1','test-token'); return {error:null};},
-      signOut:async()=>{window.calls.push('logout'); options.auth.storage.removeItem('scoli-auth-v1'); return {error:null};}},
+      updateUser:async()=>{window.calls.push('updatePassword');return {error:window.updateError?{code:'weak_password'}:null};},signOut:async()=>{window.calls.push('logout');if(window.authCallback)window.authCallback('SIGNED_OUT',null); options.auth.storage.removeItem('scoli-auth-v1'); return {error:null};}},
     from:table=>{
      const query={select:()=>{window.calls.push('read:'+table);return query;},eq:()=>query,
       upsert:()=>{window.calls.push('write:'+table); return Promise.resolve({error:window.writeError?{message:'denied'}:null});},
@@ -62,6 +62,33 @@ const path=require('path');
  await page.waitForLoadState('load');
  await page.waitForFunction(()=>document.body.classList.contains('auth-locked'));
  assert.equal(await page.evaluate(()=>sessionStorage.getItem('scoli-auth-v1')),null);
+ await page.locator('#authPassword').fill('fixture-password');await page.locator('#authSubmit').click();
+ await page.waitForFunction(()=>!document.body.classList.contains('auth-locked'));
+ await page.getByRole('button',{name:'修改密码',exact:true}).click();
+ await page.locator('#currentPassword').fill('invalid');
+ await page.locator('#newPassword').fill('new-fixture-password');
+ await page.locator('#confirmPassword').fill('different-fixture-password');
+ await page.getByRole('button',{name:'确认修改并重新登录'}).click();
+ assert.ok((await page.locator('#passwordChangeMessage').textContent()).includes('不一致'));
+ assert.equal(await page.evaluate(()=>calls.includes('updatePassword')),false);
+ await page.locator('#confirmPassword').fill('new-fixture-password');
+ await page.getByRole('button',{name:'确认修改并重新登录'}).click();
+ await page.waitForFunction(()=>document.getElementById('passwordChangeMessage').textContent.includes('当前密码验证失败'));
+ assert.equal(await page.evaluate(()=>calls.includes('updatePassword')),false);
+ assert.equal(await page.locator('#newPassword').inputValue(),'');
+ await page.evaluate(()=>{window.updateError=true;});
+ for(const [id,value] of [['currentPassword','fixture-password'],['newPassword','new-fixture-password'],['confirmPassword','new-fixture-password']])await page.locator('#'+id).fill(value);
+ await page.getByRole('button',{name:'确认修改并重新登录'}).click();
+ await page.waitForFunction(()=>document.getElementById('passwordChangeMessage').textContent.includes('未修改成功'));
+ assert.equal(await page.locator('#currentPassword').inputValue(),'');
+ await page.evaluate(()=>{window.updateError=false;});
+ for(const [id,value] of [['currentPassword','fixture-password'],['newPassword','new-fixture-password'],['confirmPassword','new-fixture-password']])await page.locator('#'+id).fill(value);
+ await page.screenshot({path:'password-change-test.png'});
+ await page.getByRole('button',{name:'确认修改并重新登录'}).click();
+ await page.waitForFunction(()=>document.body.classList.contains('auth-locked') && document.getElementById('authMessage').textContent.includes('密码已修改'));
+ assert.equal(await page.evaluate(()=>localStorage.getItem('scoli-auth-v1')),null);
+ assert.equal(await page.locator('#authPassword').inputValue(),'');
+ assert.deepEqual(errors,[]);
  await context.close(); await browser.close();
  console.log('PASS: no anonymous reads/exports; login rejection/success; session-only storage; password clearing; HTML escaping; failed writes; wrong-user and read-failure lock; logout. Mocked Supabase, no live patient access.');
 })().catch(e=>{console.error(e);process.exit(1)});
