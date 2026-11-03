@@ -843,7 +843,7 @@ body:not(.auth-locked) #authPanel { display:none; }
       <img id="mobileLogoImg" src="" style="display:none;width:34px;height:34px;object-fit:contain;border-radius:6px;flex-shrink:0">
       <div class="page-title" id="topTitle">📊 数据总览</div>
     </div>
-    <div class="topbar-actions"><button class="btn btn-secondary" onclick="openPasswordChange()">修改密码</button><button class="btn btn-secondary" onclick="logout()">退出登录</button>
+    <div class="topbar-actions"><span id="liveSyncNote" role="status" style="font-size:11px">正在连接云端</span><button class="btn btn-secondary" onclick="openPasswordChange()">修改密码</button><button class="btn btn-secondary" onclick="logout()">退出登录</button>
       <span id="syncStatus" style="font-size:11px;color:var(--text-muted);white-space:nowrap">📱 本地模式</span>
       <button class="btn btn-secondary" onclick="backupAll()" title="导出全部数据">📤 备份</button>
       <label class="btn btn-secondary" style="cursor:pointer;margin:0" title="导入备份文件">
@@ -1479,6 +1479,16 @@ body:not(.auth-locked) #authPanel { display:none; }
   </form>
 </div>
 
+
+<div id="syncDraftBanner" hidden style="position:fixed;top:65px;right:16px;z-index:450;background:#fff3cd;border:1px solid #e1b957;padding:12px;border-radius:8px;max-width:90vw">
+  有未保存草稿，云端内容未被覆盖。<button class="btn btn-secondary" onclick="inspectSyncDraft()">核对并处理</button><button class="btn btn-secondary" onclick="downloadSyncDraft()">下载草稿</button>
+</div>
+<div id="syncDraftModal" class="modal-bg" role="dialog" aria-modal="true" aria-labelledby="syncDraftTitle" style="z-index:500">
+ <div class="modal"><h2 id="syncDraftTitle">核对未保存草稿</h2><p>展开各项查看当前云端和本次草稿。核对后重试只修改所列记录；若其他设备再次更新，会再次提示冲突。</p>
+ <div id="syncDraftDetails" style="font-size:12px;overflow:auto;margin-top:16px"></div>
+ <div class="modal-actions" style="flex-wrap:wrap"><button class="btn btn-secondary" onclick="document.getElementById('syncDraftModal').classList.remove('open')">暂时保留</button><button class="btn btn-secondary" onclick="downloadSyncDraft()">下载草稿</button><button class="btn btn-danger" onclick="discardSyncDraft()">放弃草稿</button><button class="btn btn-primary" onclick="retrySyncDraft()">已核对，按草稿保存</button></div></div>
+</div>
+
 <script>
 // ========================
 // ========================
@@ -1525,6 +1535,7 @@ function clearLegacyCache() {
 }
 function lockApp(message) {
   authReady=false; authEpoch++;
+  stopCloudSync();
   document.body.classList.add('auth-locked');
   patients=[]; roster=[]; galleryPhotos=[];
   pendingImportData=[];
@@ -1558,6 +1569,7 @@ async function verifyAndOpen() {
     }
     if (!authReady || epoch!==authEpoch) return;
     document.body.classList.remove('auth-locked');
+    startCloudSync();
     renderDashboard(); renderPatients(); renderGallery();
     document.getElementById('authPassword').value='';
   } catch(e) { lockApp('登录或数据加载失败，请检查网络、账号及后台权限后重试。'); }
@@ -1648,47 +1660,210 @@ async function signedPhoto(path) {
   const data=checked(await sb.storage.from('gallery').createSignedUrl(path,300));
   return data.signedUrl;
 }
-async function loadFromCloud() {
-  requireLogin();
-  const epoch=authEpoch;
-  showSyncStatus('syncing');
-  const [pData,rData,gData]=await Promise.all([
-    sb.from('patients').select('id,data').then(checked),
-    sb.from('roster').select('id,data').eq('id',1).then(checked),
-    sb.from('gallery').select('id,data').then(checked)
-  ]);
-  const photos=await Promise.all(gData.map(async row=>{
-    const path=photoPath(row.data);
-    // Legacy embedded images stay protected by table RLS and in memory only.
-    const embedded=/^data:image\/(png|jpeg|gif|webp);base64,[A-Za-z0-9+/=]+$/.test(row.data.dataUrl||'') ? row.data.dataUrl : '';
-    return {...row.data,path,dataUrl:path?await signedPhoto(path):embedded};
-  }));
-  if(!authReady || epoch!==authEpoch) return;
-  patients=pData.map(r=>r.data); roster=rData[0]?.data||[]; galleryPhotos=photos;
-  showSyncStatus('ok'); renderDashboard();
+async function loadFromCloud() {return refreshFromCloud();}
+let syncBase={patients:[],roster:[],gallery:[]};
+let syncRevision=0;
+let syncBusy=false;
+let syncRefreshPromise=null;
+let syncRefreshAgain=false;
+let syncChannel=null;
+let syncTimer=null;
+let syncFallback=null;
+let pendingSyncDraft=null;
+let syncConnected=false;
+let syncDraftReview=null;
+let pendingSyncAfterSave=null;
+function stableValue(value) {
+  if(Array.isArray(value)) return value.map(stableValue);
+  if(value && typeof value==='object') return Object.fromEntries(Object.keys(value).sort().filter(k=>value[k]!==undefined).map(k=>[k,stableValue(value[k])]));
+  return value;
 }
-async function saveRows(table,rows) {
-  requireLogin();
-  try {
-    showSyncStatus('syncing');
-    if(rows.length) checked(await sb.from(table).upsert(rows,{onConflict:'id'}));
-    if(!authReady) return false;
-    showSyncStatus('ok'); return true;
-  } catch(e) {
-    showSyncStatus('error');
-    showToast('⚠️ 云端保存失败，修改尚未保存，请保持页面并重试。',true);
-    return false;
+function sameData(a,b) {return JSON.stringify(stableValue(a))===JSON.stringify(stableValue(b));}
+function newRecordId() {return crypto.randomUUID();}
+function snapshotRow(table,id) {return syncBase[table].find(r=>String(r.id)===String(id));}
+function putChange(table,id,data) {
+  const row=snapshotRow(table,id);
+  return {table,id:String(id),op:'put',expected:row?.version||0,data:structuredClone(data)};
+}
+function changedRows(table,rows) {
+  return rows.filter(r=>!sameData(snapshotRow(table,r.id)?.data,r.data)).map(r=>putChange(table,r.id,r.data));
+}
+function galleryMetadata(g) {
+  const path=photoPath(g);
+  const embedded=!path && /^data:image\/(png|jpeg|gif|webp);base64,[A-Za-z0-9+/=]+$/.test(g.dataUrl||'')?g.dataUrl:undefined;
+  return {id:g.id,caption:g.caption,date:g.date,path,dataUrl:embedded,sort:g.sort};
+}
+function setSyncNote(text) {document.getElementById('liveSyncNote').textContent=text;}
+function updateDraftBanner() {
+  document.getElementById('syncDraftBanner').hidden=!pendingSyncDraft;
+}
+function renderSyncedPages() {
+  renderDashboard();
+  const active=document.querySelector('.page.active')?.id;
+  if(active==='page-patients') renderPatients();
+  if(active==='page-roster') renderRosterMain();
+  if(active==='page-add') {renderRosterPanel();updateRosterStatusBar();}
+  if(active==='page-achievements') renderAchievements();
+  if(active==='page-report') renderReport();
+  const lightbox=document.getElementById('galleryLightbox');
+  if(active==='page-gallery') renderGallery();
+  if(lightbox.style.display==='flex') {
+    if(lightboxIndex>=galleryPhotos.length) lightbox.style.display='none';
+    else updateLightbox();
   }
 }
-function saveData() { return saveRows('patients',patients.map(p=>({id:String(p.id),data:p}))); }
-function saveRoster() { return saveRows('roster',[{id:1,data:roster}]); }
-function saveGallery() {
-  return saveRows('gallery',galleryPhotos.map(g=>{
-    const path=photoPath(g);
-    const embedded=!path && /^data:image\/(png|jpeg|gif|webp);base64,[A-Za-z0-9+/=]+$/.test(g.dataUrl||'') ? g.dataUrl : undefined;
-    return {id:String(g.id),data:{id:g.id,caption:g.caption,date:g.date,path,dataUrl:embedded}};
-  }));
+async function refreshFromCloud() {
+  requireLogin();
+  if(syncBusy) {syncRefreshAgain=true;return;}
+  if(syncRefreshPromise) {syncRefreshAgain=true;return syncRefreshPromise;}
+  const epoch=authEpoch;
+  syncRefreshPromise=(async()=>{
+    const data=checked(await sb.rpc('scoli_snapshot'));
+    if(!data) throw new Error('Not authorized');
+    const photos=await Promise.all(data.gallery.map(async row=>{
+      const path=photoPath(row.data);
+      const embedded=/^data:image\/(png|jpeg|gif|webp);base64,[A-Za-z0-9+/=]+$/.test(row.data.dataUrl||'')?row.data.dataUrl:'';
+      let dataUrl=embedded;
+      if(path) {try{dataUrl=await signedPhoto(path);}catch(e){dataUrl='';}}
+      return {...row.data,path,dataUrl};
+    }));
+    if(!authReady || epoch!==authEpoch) return;
+    if(syncBusy) {syncRefreshAgain=true;return;}
+    const oldPhotoId=galleryPhotos[lightboxIndex]?.id;
+    syncBase=data; syncRevision=data.revision;
+    patients=data.patients.map(r=>structuredClone(r.data));
+    roster=structuredClone(data.roster.find(r=>String(r.id)==='1')?.data||[]);
+    galleryPhotos=photos.sort((a,b)=>(a.sort??0)-(b.sort??0));
+    if(oldPhotoId!==undefined) {
+      const i=galleryPhotos.findIndex(g=>String(g.id)===String(oldPhotoId));
+      if(i<0) document.getElementById('galleryLightbox').style.display='none'; else lightboxIndex=i;
+    }
+    renderSyncedPages();
+    showSyncStatus('ok');
+    setSyncNote(syncConnected?'云端已同步 · 自动更新':'云端已同步 · 定期检查更新');
+  })();
+  try {await syncRefreshPromise;} finally {
+    syncRefreshPromise=null;
+    if(syncRefreshAgain && authReady && !syncBusy) {syncRefreshAgain=false;queueCloudRefresh();}
+  }
 }
+function queueCloudRefresh() {
+  if(!authReady) return;
+  clearTimeout(syncTimer);
+  syncTimer=setTimeout(async()=>{
+    try {
+      const state=checked(await sb.from('scoli_sync_state').select('version').eq('id',true).single());
+      if(state.version!==syncRevision) await refreshFromCloud();
+      else setSyncNote(syncConnected?'云端已同步 · 自动更新':'云端已同步 · 定期检查更新');
+    } catch(e) {setSyncNote('连接中断，输入已保留；恢复网络后自动同步');}
+  },250);
+}
+function startCloudSync() {
+  if(syncChannel || !authReady) return;
+  syncChannel=sb.channel('scoli-sync-v1')
+    .on('postgres_changes',{event:'UPDATE',schema:'public',table:'scoli_sync_state'},()=>queueCloudRefresh())
+    .subscribe(status=>{
+      syncConnected=status==='SUBSCRIBED';
+      if(syncConnected) queueCloudRefresh();
+      else setSyncNote('自动连接中 · 定期检查更新');
+    });
+  syncFallback=setInterval(()=>{if(authReady && document.visibilityState==='visible') queueCloudRefresh();},15000);
+}
+function stopCloudSync() {
+  clearTimeout(syncTimer);clearInterval(syncFallback);
+  if(syncChannel) sb.removeChannel(syncChannel);
+  syncChannel=null;syncConnected=false;
+  syncBase={patients:[],roster:[],gallery:[]};syncRevision=0;
+  pendingSyncDraft=null;updateDraftBanner();
+  syncDraftReview=null;
+  pendingSyncAfterSave=null;
+  document.getElementById('syncDraftDetails').replaceChildren();
+  document.getElementById('syncDraftModal').classList.remove('open');
+}
+async function commitChanges(changes,options={}) {
+  requireLogin();
+  if(pendingSyncDraft && !options.retry) {showToast('⚠️ 请先处理上方保留的未保存草稿。',true);return false;}
+  if(syncBusy) {showToast('⚠️ 上一次保存尚未完成，请稍候。',true);return false;}
+  const draft={changes:structuredClone(changes),revision:options.revision??syncRevision,batch:!!options.batch};
+  if(!changes.length) return true;
+  const epoch=authEpoch;
+  syncBusy=true;showSyncStatus('syncing');
+  try {
+    checked(await sb.rpc('scoli_commit',{p_changes:changes,p_expected_revision:options.batch?draft.revision:null}));
+    if(!authReady || epoch!==authEpoch) return false;
+    pendingSyncDraft=null;updateDraftBanner();
+    return true;
+  } catch(e) {
+    if(authReady && epoch===authEpoch) {
+      pendingSyncDraft=draft;updateDraftBanner();showSyncStatus('error');
+      if(!options.retry) pendingSyncAfterSave=options.afterSave||null;
+      showToast(e.code==='40001'?'⚠️ 其他设备已更新，未覆盖云端；你的草稿已保留，请核对后重试。':'⚠️ 保存结果未确认，草稿已保留；请恢复网络后核对。',true);
+    }
+    return false;
+  } finally {
+    syncBusy=false;
+    if(authReady && epoch===authEpoch) {
+      try{await refreshFromCloud();}catch(e){setSyncNote('尚未同步，恢复网络后自动重试');}
+    }
+  }
+}
+async function saveRows(table,rows,options={}) {return commitChanges(changedRows(table,rows),options);}
+function saveData() {return saveRows('patients',patients.map(p=>({id:String(p.id),data:p})),{batch:true});}
+function saveRoster(nextRoster=roster,options={}) {return saveRows('roster',[{id:1,data:nextRoster}],{batch:true,...options});}
+function saveGallery(nextGallery=galleryPhotos) {return saveRows('gallery',nextGallery.map(g=>({id:String(g.id),data:galleryMetadata(g)})));}
+async function deleteFromCloud(id) {
+  const row=snapshotRow('patients',id);
+  if(!row) {showToast('记录已变动，请等待同步后重试。',true);return false;}
+  return commitChanges([{table:'patients',id:String(id),op:'delete',expected:row.version}]);
+}
+async function inspectSyncDraft() {
+  if(!pendingSyncDraft || !authReady) return;
+  try {await refreshFromCloud();}catch(e){showToast('⚠️ 暂时无法取得最新数据，请恢复网络后再核对。',true);return;}
+  const labels={patients:'患者记录',roster:'名单',gallery:'照片信息'};
+  syncDraftReview={draft:pendingSyncDraft,revision:syncRevision,base:structuredClone(syncBase)};
+  const details=document.getElementById('syncDraftDetails');details.replaceChildren();
+  pendingSyncDraft.changes.forEach(ch=>{
+    const item=document.createElement('details');
+    const title=document.createElement('summary');title.textContent=labels[ch.table]+' · '+(ch.data?.name||ch.data?.caption||ch.id)+(ch.op==='delete'?'（拟删除）':'');item.append(title);
+    const current=document.createElement('pre');current.style.whiteSpace='pre-wrap';
+    current.textContent='当前云端：\n'+JSON.stringify(snapshotRow(ch.table,ch.id)?.data??'不存在',null,2)+'\n\n本次草稿：\n'+JSON.stringify(ch.op==='delete'?'删除此项':ch.data,null,2);
+    item.append(current);details.append(item);
+  });
+  document.getElementById('syncDraftModal').classList.add('open');
+}
+function downloadSyncDraft() {
+  if(!authReady || !pendingSyncDraft) return;
+  const url=URL.createObjectURL(new Blob([JSON.stringify(pendingSyncDraft,null,2)],{type:'application/json'}));
+  const a=document.createElement('a');a.href=url;a.download='未保存草稿.json';a.click();URL.revokeObjectURL(url);
+}
+function discardSyncDraft() {
+  if(!pendingSyncDraft || !confirm('确认放弃这份未保存草稿？建议先下载保存。')) return;
+  pendingSyncDraft=null;updateDraftBanner();document.getElementById('syncDraftModal').classList.remove('open');
+  pendingSyncAfterSave=null;
+}
+async function retrySyncDraft() {
+  if(!pendingSyncDraft || syncBusy || !authReady) return;
+  const review=syncDraftReview;
+  if(!review || review.draft!==pendingSyncDraft) {showToast('请先查看最新差异。',true);return;}
+  const draft=review.draft;
+  const afterSave=pendingSyncAfterSave;
+  const viewedRevision=review.revision;
+  if(!confirm('请确认已展开核对差异。继续将按所示草稿保存对应记录，可能覆盖这些记录的云端内容。')) return;
+  // No fresh rebase here: a change since the displayed comparison must conflict again.
+  const changes=draft.changes.filter(ch=>{
+    const row=review.base[ch.table].find(r=>String(r.id)===String(ch.id));
+    return ch.op==='delete'?!!row:!sameData(row?.data,ch.data);
+  }).map(ch=>({...ch,expected:review.base[ch.table].find(r=>String(r.id)===String(ch.id))?.version||0}));
+  if(await commitChanges(changes,{retry:true,batch:true,revision:viewedRevision})) {
+    pendingSyncDraft=null;updateDraftBanner();document.getElementById('syncDraftModal').classList.remove('open');showToast('✅ 草稿已保存');
+    pendingSyncAfterSave=null;
+    if(afterSave) afterSave();
+  } else document.getElementById('syncDraftModal').classList.remove('open');
+}
+window.addEventListener('online',()=>queueCloudRefresh());
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')queueCloudRefresh();});
+window.addEventListener('beforeunload',event=>{if(pendingSyncDraft || syncBusy){event.preventDefault();event.returnValue='';}});
+
 async function uploadPhotoToStorage(file,id) {
   requireLogin();
   const ext=({ 'image/jpeg':'jpg','image/png':'png','image/gif':'gif','image/webp':'webp' })[file.type];
@@ -1697,12 +1872,6 @@ async function uploadPhotoToStorage(file,id) {
   checked(await sb.storage.from('gallery').upload(path,file,{upsert:false}));
   return path;
 }
-async function deleteFromCloud(id) {
-  requireLogin();
-  try { checked(await sb.from('patients').delete().eq('id',String(id))); return authReady; }
-  catch(e) { showToast('⚠️ 云端删除失败，记录已保留。',true); return false; }
-}
-
 // 同步状态指示器
 function showSyncStatus(status) {
   let el = document.getElementById('syncStatus');
@@ -1810,6 +1979,7 @@ function parseColMap(sampleRow) {
 
 function processRosterFile(file) {
   if (!authReady) return;
+  const sourceRevision=syncRevision;
   const reader = new FileReader();
   reader.onload = async function(e) {
     if (!authReady) return;
@@ -1828,8 +1998,7 @@ function processRosterFile(file) {
         class: colMap.class ? String(row[colMap.class] || '') : '',
         phone: colMap.phone ? String(row[colMap.phone] || '') : '',
       })).filter(r => r.name);
-      roster = newRoster;
-      if (!await saveRoster()) return;
+      if (!await saveRoster(newRoster,{revision:sourceRevision})) return;
       renderRosterMain();
       showToast(`✅ 成功导入 ${newRoster.length} 人名单！`);
     } catch(err) {
@@ -1842,8 +2011,7 @@ function processRosterFile(file) {
 async function clearRoster() {
   if (!authReady) return;
   if (!confirm('确认清空所有名单数据？')) return;
-  roster = [];
-  if (!await saveRoster()) return;
+  if (!await saveRoster([])) return;
   renderRosterMain();
   showToast('🗑 名单已清空');
 }
@@ -1852,6 +2020,7 @@ async function clearRoster() {
 // FULL DATA IMPORT
 // ========================
 let pendingImportData = [];
+let pendingImportRevision=0;
 
 function handleFullDrop(e) {
   if (!authReady) return;
@@ -1904,6 +2073,7 @@ function processFullFile(file) {
       if (parsed.length === 0) { showToast('⚠️ 没有有效数据行（姓名或Cobb角为空）', true); return; }
 
       pendingImportData = parsed;
+      pendingImportRevision=syncRevision;
       renderImportPreview(parsed);
     } catch(err) {
       showToast('❌ 文件读取失败，请检查格式', true);
@@ -1943,36 +2113,31 @@ function renderImportPreview(data) {
 }
 
 async function confirmFullImport() {
-  if (!authReady) return;
-  if (pendingImportData.length === 0) return;
-  const overwrite = document.getElementById('overwriteCheck').checked;
-  let added = 0, skipped = 0, overwritten = 0;
-
-  pendingImportData.forEach(r => {
-    const existIdx = patients.findIndex(p => p.name === r.name);
-    if (existIdx >= 0) {
-      if (overwrite) {
-        patients[existIdx] = { ...patients[existIdx], ...r, id: patients[existIdx].id };
-        overwritten++;
-      } else {
-        skipped++;
-      }
-    } else {
-      patients.push({ ...r, id: Date.now() + Math.random() });
-      added++;
-    }
+  if(!authReady || !pendingImportData.length) return;
+  const overwrite=document.getElementById('overwriteCheck').checked;
+  const imported=pendingImportData;
+  const next=patients.map(p=>({...p}));
+  let added=0,overwritten=0,skipped=0;
+  pendingImportData.forEach(r=>{
+    const i=next.findIndex(p=>p.name===r.name);
+    if(i>=0) {if(overwrite) {next[i]={...next[i],...r,id:next[i].id};overwritten++;}else skipped++;}
+    else {next.push({...r,id:newRecordId()});added++;}
   });
-
-  if (!await saveData()) return;
-  pendingImportData = [];
-  document.getElementById('previewEmpty').style.display = 'block';
-  document.getElementById('previewPanel').style.display = 'none';
-  document.getElementById('previewCountBadge').textContent = '';
-
-  let msg = `✅ 导入完成！新增 ${added} 条`;
-  if (overwritten) msg += `，覆盖 ${overwritten} 条`;
-  if (skipped) msg += `，跳过 ${skipped} 条（同名）`;
-  showToast(msg);
+  const changes=changedRows('patients',next.map(p=>({id:String(p.id),data:p})));
+  const afterSave=()=>{
+    if(pendingImportData===imported) {
+      pendingImportData=[];
+      document.getElementById('previewEmpty').style.display='block';
+      document.getElementById('previewPanel').style.display='none';
+      document.getElementById('previewCountBadge').textContent='';
+    }
+  };
+  if(!await commitChanges(changes,{batch:true,revision:pendingImportRevision,afterSave})) return;
+  pendingImportData=[];
+  document.getElementById('previewEmpty').style.display='block';
+  document.getElementById('previewPanel').style.display='none';
+  document.getElementById('previewCountBadge').textContent='';
+  showToast('✅ 导入完成！新增 '+added+' 条，更新 '+overwritten+' 条，跳过 '+skipped+' 条');
 }
 
 // ========================
@@ -2286,7 +2451,7 @@ function renderPatients() {
       <td><span style="font-family:'DM Mono',monospace;font-weight:700">${escapeHtml(p.cobb)}°</span></td>
       <td>${escapeHtml(p.location || '—')} ${p.direction ? '<span class="pill">'+escapeHtml(p.direction)+'</span>' : ''}</td>
       <td><span class="badge ${g.badge}">${g.label}</span></td>
-      <td><button class="btn btn-danger" style="padding:4px 10px;font-size:11px" onclick="deletePatient(${Number(p.id)})">删除</button></td>
+      <td><button class="btn btn-danger" style="padding:4px 10px;font-size:11px" onclick="deletePatient(${handlerArg(p.id)})">删除</button></td>
     </tr>`;
   }).join('');
 }
@@ -2298,7 +2463,7 @@ async function deletePatient(id) {
   // 先删云端
   if (!await deleteFromCloud(id)) return;
   // 再更新本地
-  patients = patients.filter(p => p.id !== id);
+  patients = patients.filter(p => String(p.id) !== String(id));
   showSyncStatus('ok');
   renderPatients();
   renderDashboard();
@@ -2341,7 +2506,7 @@ async function submitForm(prefix) {
   }
 
   const newPatient = {
-    id: Date.now(),
+    id: newRecordId(),
     name,
     age: parseInt(age),
     gender,
@@ -2355,9 +2520,16 @@ async function submitForm(prefix) {
     created: Date.now()
   };
 
-  if (!await saveRows('patients',[{id:String(newPatient.id),data:newPatient}])) return false;
+  const inputSnapshot=[...document.querySelectorAll('input,select,textarea')].filter(el=>el.id.startsWith(prefix)).map(el=>[el.id,el.value]);
+  const afterSave=()=>{
+    if(inputSnapshot.every(([id,value])=>document.getElementById(id)?.value===value)) {
+      if(prefix==='f_') clearInlineForm();
+      else {inputSnapshot.forEach(([id])=>document.getElementById(id).value='');closeModal();}
+    }
+  };
+  if (!await saveRows('patients',[{id:String(newPatient.id),data:newPatient}],{afterSave})) return false;
   if (!authReady) return false;
-  patients.push(newPatient);
+  // The committed record is already in the refreshed cloud snapshot.
   showToast('✅ 患者记录已保存！');
   return true;
 }
@@ -2495,6 +2667,7 @@ function backupAll() {
 
 function restoreAll(event) {
   if (!authReady) return;
+  const restoreRevision=syncRevision;
   const file = event.target.files[0];
   if (!file) return;
   const reader = new FileReader();
@@ -2526,18 +2699,12 @@ function restoreAll(event) {
         if (!mergedGallery.find(mg => mg.id === g.id)) mergedGallery.push(g);
       });
 
-      patients = mergedPatients;
-      roster = mergedRoster;
-      galleryPhotos = await Promise.all(mergedGallery.map(async g=>{
-        const path=photoPath(g);
-        const embedded=/^data:image\/(png|jpeg|gif|webp);base64,[A-Za-z0-9+/=]+$/.test(g.dataUrl||'') ? g.dataUrl : '';
-        return {...g,path,dataUrl:path?await signedPhoto(path):embedded};
-      }));
-      if(!authReady) return;
-
-      if (!await saveData()) return;
-      if (!await saveRoster()) return;
-      if (!await saveGallery()) return;
+      const changes=[
+        ...changedRows('patients',mergedPatients.map(p=>({id:String(p.id),data:p}))),
+        ...changedRows('roster',[{id:1,data:mergedRoster}]),
+        ...changedRows('gallery',mergedGallery.map(g=>({id:String(g.id),data:galleryMetadata(g)})))
+      ];
+      if(!await commitChanges(changes,{batch:true,revision:restoreRevision})) return;
 
       renderDashboard();
       showToast(`✅ 导入成功！共合并 ${mergedPatients.length} 条患者记录`);
@@ -2617,18 +2784,19 @@ function handleGalleryDrop(event) {
 }
 
 async function processGalleryFiles(files) {
-  if (!authReady || !files.length) return;
+  if (!authReady || !files.length || syncBusy || pendingSyncDraft) {if(pendingSyncDraft) showToast('请先处理未保存草稿。',true);return;}
+  const additions=[];
   try {
     for (const [i,file] of files.entries()) {
       if (!file.type.startsWith('image/')) throw new Error('请选择图片');
-      const id = Date.now()+i;
+      const id = newRecordId();
       const path = await uploadPhotoToStorage(file,id);
       if (!authReady) return;
       const dataUrl = await signedPhoto(path);
       if (!authReady) return;
-      galleryPhotos.unshift({id,path,dataUrl,caption:file.name.replace(/\.[^.]+$/,''),date:new Date().toLocaleDateString('zh-CN')});
+      additions.unshift({id,path,dataUrl,sort:Math.min(0,...galleryPhotos.map(g=>g.sort||0))-i-1,caption:file.name.replace(/\.[^.]+$/,''),date:new Date().toLocaleDateString('zh-CN')});
     }
-    if (!await saveGallery()) return;
+    if (!await saveGallery(additions)) return;
     renderGallery(); showToast('✅ 照片已保存');
   } catch(e) { showToast('⚠️ 照片上传失败，请重试',true); }
 }
@@ -2712,9 +2880,10 @@ async function galleryDrop(e, targetIndex) {
   if (!authReady) return;
   e.preventDefault();
   if (dragSrcIndex === null || dragSrcIndex === targetIndex) return;
-  const moved = galleryPhotos.splice(dragSrcIndex, 1)[0];
-  galleryPhotos.splice(targetIndex, 0, moved);
-  if (!await saveGallery()) return;
+  const next=galleryPhotos.map(g=>({...g}));
+  const moved = next.splice(dragSrcIndex,1)[0];next.splice(targetIndex,0,moved);
+  next.forEach((g,i)=>g.sort=i);
+  if (!await saveGallery(next)) return;
   renderGallery();
 }
 
@@ -2778,11 +2947,12 @@ async function deleteLightboxPhoto() {
   if (!authReady || !confirm('确认删除这张照片？')) return;
   const photo = galleryPhotos[lightboxIndex];
   try {
-    checked(await sb.from('gallery').delete().eq('id',String(photo.id)));
+    const row=snapshotRow('gallery',photo.id);
+    if(!row || !await commitChanges([{table:'gallery',id:String(photo.id),op:'delete',expected:row.version}])) return;
     const path = photoPath(photo);
     if (path) checked(await sb.storage.from('gallery').remove([path]));
     if (!authReady) return;
-    galleryPhotos.splice(lightboxIndex,1);
+    // Gallery list already refreshed after the committed deletion.
     document.getElementById('galleryLightbox').style.display='none';
     renderGallery(); showToast('🗑 照片已删除');
   } catch(e) { showToast('⚠️ 删除未完全完成，请刷新核对后重试',true); }
