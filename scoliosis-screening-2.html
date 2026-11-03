@@ -774,7 +774,26 @@
   }
 </style>
 </head>
-<body>
+<body class="auth-locked">
+<style>
+body.auth-locked > :not(#authPanel):not(script):not(style) { display:none!important; }
+#authPanel { margin:auto; padding:28px; width:min(420px,94vw); }
+#authPanel form { display:grid; gap:16px; background:white; padding:28px; border-radius:14px; box-shadow:var(--card-shadow); }
+#authPanel label { display:grid; gap:6px; font-size:14px; }
+#authPanel input { min-width:0; }
+body:not(.auth-locked) #authPanel { display:none; }
+@media print { body.auth-locked > :not(#authPanel) { display:none!important; } }
+</style>
+<section id="authPanel" aria-label="账号登录">
+<form id="authForm">
+<h1 style="font-size:22px">脊柱侧弯筛查管理系统</h1>
+<p>请使用共享账号登录。公用设备请取消记住登录，并在使用后退出。</p>
+<label>邮箱<input class="form-input" id="authEmail" type="email" value="2079700358@qq.com" autocomplete="username" readonly required></label>
+<label>密码<input class="form-input" id="authPassword" type="password" autocomplete="current-password" required></label>
+<label style="display:flex;align-items:center"><input id="authRemember" type="checkbox" checked>记住登录</label>
+<button id="authSubmit" class="btn btn-primary" type="submit">登录</button>
+<p id="authMessage" role="status" aria-live="polite">正在验证登录状态…</p>
+</form></section>
 
 <!-- Sidebar -->
 <aside class="sidebar">
@@ -824,7 +843,7 @@
       <img id="mobileLogoImg" src="" style="display:none;width:34px;height:34px;object-fit:contain;border-radius:6px;flex-shrink:0">
       <div class="page-title" id="topTitle">📊 数据总览</div>
     </div>
-    <div class="topbar-actions">
+    <div class="topbar-actions"><button class="btn btn-secondary" onclick="logout()">退出登录</button>
       <span id="syncStatus" style="font-size:11px;color:var(--text-muted);white-space:nowrap">📱 本地模式</span>
       <button class="btn btn-secondary" onclick="backupAll()" title="导出全部数据">📤 备份</button>
       <label class="btn btn-secondary" style="cursor:pointer;margin:0" title="导入备份文件">
@@ -1456,27 +1475,134 @@
 const SUPABASE_URL = 'https://ocunhxbioecspvlblpvl.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_lgYIybpcrMm1FaRZob14Wg_wcehwHqv';
 
+const SHARED_EMAIL = '2079700358@qq.com';
+const AUTH_KEY = 'scoli-auth-v1';
+let authReady = false;
+let authEpoch = 0;
+let authLoading = false;
 let sb = null;
 let useCloud = false;
-
+const authMessage = document.getElementById('authMessage');
+const authSubmit = document.getElementById('authSubmit');
+// Store tokens only; never persist health records or passwords.
+const authStorage = {
+  getItem(key) { return sessionStorage.getItem(key) ?? localStorage.getItem(key); },
+  setItem(key,value) {
+    const remember = localStorage.getItem('scoli-remember') !== 'no';
+    (remember ? sessionStorage : localStorage).removeItem(key);
+    (remember ? localStorage : sessionStorage).setItem(key,value);
+  },
+  removeItem(key) { localStorage.removeItem(key); sessionStorage.removeItem(key); }
+};
 try {
-  sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+  sb = supabase.createClient(SUPABASE_URL,SUPABASE_KEY,{auth:{
+    storage:authStorage, storageKey:AUTH_KEY, persistSession:true,
+    autoRefreshToken:true, detectSessionInUrl:false
+  }});
   useCloud = true;
-} catch(e) {
-  console.warn('Supabase未配置，使用本地模式');
+} catch(e) { authMessage.textContent='登录服务不可用，请检查网络后刷新。'; }
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function handlerArg(value) { return escapeHtml(JSON.stringify(String(value)).replace(/</g,'\\u003c')); }
+function clearLegacyCache() {
+  for (const key of ['scoli_patients','scoli_roster','scoli_gallery']) {
+    localStorage.removeItem(key); sessionStorage.removeItem(key);
+  }
+}
+function lockApp(message) {
+  authReady=false; authEpoch++;
+  document.body.classList.add('auth-locked');
+  patients=[]; roster=[]; galleryPhotos=[];
+  pendingImportData=[];
+  document.querySelectorAll('.modal-bg').forEach(el=>el.classList.remove('open'));
+  document.getElementById('galleryLightbox').style.display='none';
+  document.querySelectorAll('input:not(#authEmail):not(#authRemember), textarea').forEach(el=>el.value='');
+  document.querySelectorAll('#galleryMasonry, #lightboxThumbs, tbody, .autocomplete-dropdown, .roster-list').forEach(el=>el.replaceChildren());
+  document.querySelectorAll('#lightboxImg, #galleryMasonry img').forEach(el=>el.removeAttribute('src'));
+  clearLegacyCache();
+  authMessage.textContent=message;
+}
+async function verifyAndOpen() {
+  if (!sb || authLoading) return;
+  authLoading=true;
+  const epoch=authEpoch;
+  try {
+    const {data,error}=await sb.auth.getUser();
+    if (epoch!==authEpoch) return;
+    if (error || !data.user || data.user.email?.toLowerCase()!==SHARED_EMAIL || !data.user.email_confirmed_at) {
+      lockApp('请使用已验证的共享账号登录。'); return;
+    }
+    // RLS is the authorization boundary; only reveal the application after all reads succeed.
+    const firstLoad=!authReady;
+    authReady=true;
+    if(firstLoad) await loadFromCloud();
+    else {
+      const photos=galleryPhotos;
+      const urls=await Promise.all(photos.map(p=>p.path?signedPhoto(p.path):p.dataUrl));
+      if(epoch===authEpoch && authReady && photos===galleryPhotos) photos.forEach((p,i)=>p.dataUrl=urls[i]);
+    }
+    if (!authReady || epoch!==authEpoch) return;
+    document.body.classList.remove('auth-locked');
+    renderDashboard(); renderPatients(); renderGallery();
+    document.getElementById('authPassword').value='';
+  } catch(e) { lockApp('登录或数据加载失败，请检查网络、账号及后台权限后重试。'); }
+  finally { authLoading=false; authSubmit.disabled=false; }
+}
+async function logout() {
+  lockApp('正在退出…');
+  authSubmit.disabled=true;
+  try {
+    const {error}=await sb.auth.signOut({scope:'local'});
+    if (error) throw error;
+    authMessage.textContent='已退出本设备。';
+  } catch(e) { authMessage.textContent='本设备登录已清除；远端退出未确认，请检查网络。'; }
+  finally {
+    authStorage.removeItem(AUTH_KEY);
+    // A fresh document also discards pending file readers, timers and hidden sensitive DOM.
+    location.reload();
+  }
+}
+function initAuth() {
+  clearLegacyCache();
+  document.getElementById('authRemember').checked=localStorage.getItem('scoli-remember')!=='no';
+  authSubmit.disabled=!sb;
+  document.getElementById('authForm').addEventListener('submit',async event=>{
+    event.preventDefault();
+    if (!sb || authLoading) return;
+    authSubmit.disabled=true;
+    authMessage.textContent='正在登录…';
+    try {
+      localStorage.setItem('scoli-remember',document.getElementById('authRemember').checked?'yes':'no');
+      const password=document.getElementById('authPassword').value;
+      const {error}=await sb.auth.signInWithPassword({email:SHARED_EMAIL,password});
+      document.getElementById('authPassword').value='';
+      if (error) { lockApp('登录失败，请检查邮箱、密码或稍后重试。'); return; }
+      await verifyAndOpen();
+    } catch(e) { lockApp('登录服务连接失败，请稍后重试。'); }
+    finally { authSubmit.disabled=false; }
+  });
+  if (!sb) return;
+  sb.auth.onAuthStateChange((event,session)=>{
+    // Do not await other Supabase calls inside the Auth callback.
+    if (event==='SIGNED_OUT' || (!session && event!=='INITIAL_SESSION')) {
+      const wasOpen=authReady;
+      lockApp('登录已失效，请重新登录。');
+      if(wasOpen) location.reload();
+    } else if (event==='SIGNED_IN' || event==='TOKEN_REFRESHED') {
+      setTimeout(()=>verifyAndOpen(),0);
+    }
+  });
+  verifyAndOpen();
+  document.addEventListener('visibilitychange',()=>{
+    if(document.visibilityState==='visible') verifyAndOpen();
+  });
+  // Also renew short-lived photo URLs before expiry.
+  setInterval(()=>{ if(authReady) verifyAndOpen(); },240000);
 }
 
-// ========================
-// DATA（本地缓存 + 云端同步）
-// ========================
 let patients = [];
 let roster = [];
-
-// 如果云端未配置才用本地缓存
-if (!SUPABASE_URL || SUPABASE_URL.includes('你的')) {
-  patients = JSON.parse(localStorage.getItem('scoli_patients') || '[]');
-  roster = JSON.parse(localStorage.getItem('scoli_roster') || '[]');
-}
 
 const MONTHS = ['1月','2月','3月','4月','5月','6月','7月','8月','9月','10月','11月','12月'];
 
@@ -1489,105 +1615,78 @@ const ACHIEVEMENTS = [
   { id:'a6', icon:'🌟', name:'筛查之星', desc:'完成500位患者筛查', threshold:500 },
 ];
 
-// 云端读取所有数据，合并到本地
+function checked(result) { if(result.error) throw result.error; return result.data; }
+function requireLogin() { if(!authReady) throw new Error('Login required'); }
+function photoPath(photo) {
+  if (typeof photo.path==='string' && /^photos\/[\w.-]+$/.test(photo.path)) return photo.path;
+  if (photo.url) {
+    const url=new URL(photo.url);
+    const prefix=SUPABASE_URL+'/storage/v1/object/public/gallery/';
+    if(url.href.startsWith(prefix)) {
+      const path=decodeURIComponent(url.href.slice(prefix.length).split('?')[0]);
+      if(/^photos\/[\w.-]+$/.test(path)) return path;
+    }
+  }
+  return null;
+}
+async function signedPhoto(path) {
+  requireLogin();
+  const data=checked(await sb.storage.from('gallery').createSignedUrl(path,300));
+  return data.signedUrl;
+}
 async function loadFromCloud() {
-  if (!useCloud || SUPABASE_URL.includes('你的')) return;
+  requireLogin();
+  const epoch=authEpoch;
+  showSyncStatus('syncing');
+  const [pData,rData,gData]=await Promise.all([
+    sb.from('patients').select('id,data').then(checked),
+    sb.from('roster').select('id,data').eq('id',1).then(checked),
+    sb.from('gallery').select('id,data').then(checked)
+  ]);
+  const photos=await Promise.all(gData.map(async row=>{
+    const path=photoPath(row.data);
+    // Legacy embedded images stay protected by table RLS and in memory only.
+    const embedded=/^data:image\/(png|jpeg|gif|webp);base64,[A-Za-z0-9+/=]+$/.test(row.data.dataUrl||'') ? row.data.dataUrl : '';
+    return {...row.data,path,dataUrl:path?await signedPhoto(path):embedded};
+  }));
+  if(!authReady || epoch!==authEpoch) return;
+  patients=pData.map(r=>r.data); roster=rData[0]?.data||[]; galleryPhotos=photos;
+  showSyncStatus('ok'); renderDashboard();
+}
+async function saveRows(table,rows) {
+  requireLogin();
   try {
     showSyncStatus('syncing');
-
-    // 云端数据直接覆盖本地，云端为唯一真实来源
-    const { data: pData } = await sb.from('patients').select('*');
-    if (pData) {
-      patients = pData.map(r => r.data);
-      localStorage.setItem('scoli_patients', JSON.stringify(patients));
-    }
-
-    const { data: rData } = await sb.from('roster').select('*');
-    if (rData && rData.length > 0) {
-      roster = rData[0].data;
-      localStorage.setItem('scoli_roster', JSON.stringify(roster));
-    }
-
-    const { data: gData } = await sb.from('gallery').select('id, data');
-    if (gData) {
-      galleryPhotos = gData.map(r => ({
-        ...r.data,
-        dataUrl: r.data.url || r.data.dataUrl || ''
-      }));
-      localStorage.setItem('scoli_gallery', JSON.stringify(galleryPhotos));
-    }
-
-    showSyncStatus('ok');
-    renderDashboard();
+    if(rows.length) checked(await sb.from(table).upsert(rows,{onConflict:'id'}));
+    if(!authReady) return false;
+    showSyncStatus('ok'); return true;
   } catch(e) {
     showSyncStatus('error');
-    console.warn('云端同步失败，使用本地数据', e);
+    showToast('⚠️ 云端保存失败，修改尚未保存，请保持页面并重试。',true);
+    return false;
   }
 }
-
-// 保存患者到云端
-async function saveData() {
-  localStorage.setItem('scoli_patients', JSON.stringify(patients));
-  if (!useCloud || SUPABASE_URL.includes('你的')) return;
-  try {
-    showSyncStatus('syncing');
-    const upserts = patients.map(p => ({ id: String(p.id), data: p }));
-    await sb.from('patients').upsert(upserts, { onConflict: 'id' });
-    showSyncStatus('ok');
-  } catch(e) { showSyncStatus('error'); }
+function saveData() { return saveRows('patients',patients.map(p=>({id:String(p.id),data:p}))); }
+function saveRoster() { return saveRows('roster',[{id:1,data:roster}]); }
+function saveGallery() {
+  return saveRows('gallery',galleryPhotos.map(g=>{
+    const path=photoPath(g);
+    const embedded=!path && /^data:image\/(png|jpeg|gif|webp);base64,[A-Za-z0-9+/=]+$/.test(g.dataUrl||'') ? g.dataUrl : undefined;
+    return {id:String(g.id),data:{id:g.id,caption:g.caption,date:g.date,path,dataUrl:embedded}};
+  }));
 }
-
-// 保存名单到云端
-async function saveRoster() {
-  localStorage.setItem('scoli_roster', JSON.stringify(roster));
-  if (!useCloud || SUPABASE_URL.includes('你的')) return;
-  try {
-    await sb.from('roster').upsert([{ id: 1, data: roster }], { onConflict: 'id' });
-  } catch(e) { console.warn('名单同步失败', e); }
+async function uploadPhotoToStorage(file,id) {
+  requireLogin();
+  const ext=({ 'image/jpeg':'jpg','image/png':'png','image/gif':'gif','image/webp':'webp' })[file.type];
+  if(!ext) throw new Error('Unsupported image');
+  const path=`photos/${id}.${ext}`;
+  checked(await sb.storage.from('gallery').upload(path,file,{upsert:false}));
+  return path;
 }
-
-// 保存照片到云端
-async function saveGallery() {
-  localStorage.setItem('scoli_gallery', JSON.stringify(galleryPhotos));
-  if (!useCloud || SUPABASE_URL.includes('你的')) return;
-  try {
-    // 只存元数据（不含dataUrl），照片文件存Storage
-    const upserts = galleryPhotos.map(g => ({
-      id: String(g.id),
-      data: { id: g.id, caption: g.caption, date: g.date, url: g.url || null }
-    }));
-    await sb.from('gallery').upsert(upserts, { onConflict: 'id' });
-  } catch(e) { console.warn('照片元数据同步失败', e); }
-}
-
-async function uploadPhotoToStorage(file, id) {
-  if (!useCloud || SUPABASE_URL.includes('你的')) return null;
-  try {
-    const ext = file.name.split('.').pop() || 'jpg';
-    const path = `photos/${id}.${ext}`;
-    const { error } = await sb.storage.from('gallery').upload(path, file, { upsert: true });
-    if (error) throw error;
-    const { data } = sb.storage.from('gallery').getPublicUrl(path);
-    return data.publicUrl;
-  } catch(e) {
-    console.warn('照片上传Storage失败', e);
-    return null;
-  }
-}
-
-// 删除云端患者
 async function deleteFromCloud(id) {
-  if (!useCloud || SUPABASE_URL.includes('你的')) return;
-  try {
-    const { error } = await sb.from('patients').delete().eq('id', String(id));
-    if (error) {
-      showToast('⚠️ 云端删除失败：' + error.message);
-      console.error('云端删除失败', error);
-    }
-  } catch(e) {
-    showToast('⚠️ 云端删除出错');
-    console.error('deleteFromCloud error', e);
-  }
+  requireLogin();
+  try { checked(await sb.from('patients').delete().eq('id',String(id))); return authReady; }
+  catch(e) { showToast('⚠️ 云端删除失败，记录已保留。',true); return false; }
 }
 
 // 同步状态指示器
@@ -1623,6 +1722,7 @@ function isScreened(name) {
 // NAVIGATION
 // ========================
 function switchPage(id) {
+  if (!authReady) return;
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
   document.getElementById('page-' + id).classList.add('active');
@@ -1664,6 +1764,7 @@ function switchImportTab(tab) {
 // ROSTER-ONLY IMPORT
 // ========================
 function handleRosterDrop(e) {
+  if (!authReady) return;
   e.preventDefault();
   const file = e.dataTransfer.files[0];
   if (file) processRosterFile(file);
@@ -1694,8 +1795,10 @@ function parseColMap(sampleRow) {
 }
 
 function processRosterFile(file) {
+  if (!authReady) return;
   const reader = new FileReader();
-  reader.onload = function(e) {
+  reader.onload = async function(e) {
+    if (!authReady) return;
     try {
       const data = new Uint8Array(e.target.result);
       const workbook = XLSX.read(data, { type: 'array' });
@@ -1712,7 +1815,7 @@ function processRosterFile(file) {
         phone: colMap.phone ? String(row[colMap.phone] || '') : '',
       })).filter(r => r.name);
       roster = newRoster;
-      saveRoster();
+      if (!await saveRoster()) return;
       renderRosterMain();
       showToast(`✅ 成功导入 ${newRoster.length} 人名单！`);
     } catch(err) {
@@ -1722,10 +1825,11 @@ function processRosterFile(file) {
   reader.readAsArrayBuffer(file);
 }
 
-function clearRoster() {
+async function clearRoster() {
+  if (!authReady) return;
   if (!confirm('确认清空所有名单数据？')) return;
   roster = [];
-  saveRoster();
+  if (!await saveRoster()) return;
   renderRosterMain();
   showToast('🗑 名单已清空');
 }
@@ -1736,20 +1840,24 @@ function clearRoster() {
 let pendingImportData = [];
 
 function handleFullDrop(e) {
+  if (!authReady) return;
   e.preventDefault();
   const file = e.dataTransfer.files[0];
   if (file) processFullFile(file);
 }
 
 function handleFullFileSelect(e) {
+  if (!authReady) return;
   const file = e.target.files[0];
   if (file) processFullFile(file);
   e.target.value = '';
 }
 
 function processFullFile(file) {
+  if (!authReady) return;
   const reader = new FileReader();
-  reader.onload = function(e) {
+  reader.onload = async function(e) {
+    if (!authReady) return;
     try {
       const data = new Uint8Array(e.target.result);
       const workbook = XLSX.read(data, { type: 'array' });
@@ -1810,17 +1918,18 @@ function renderImportPreview(data) {
     const dup = isScreened(r.name);
     return `<div class="roster-item" style="${dup ? 'background:#fffbea' : ''}">
       <span style="font-size:15px">${dup ? '⚠️' : '🆕'}</span>
-      <span class="r-name">${r.name}</span>
-      ${r.class ? `<span class="r-info">${r.class}</span>` : ''}
-      ${r.gender ? `<span class="r-info">${r.gender}${r.age ? '·'+r.age+'岁' : ''}</span>` : ''}
-      <span style="font-family:'DM Mono',monospace;font-size:12px;font-weight:700">${r.cobb}°</span>
+      <span class="r-name">${escapeHtml(r.name)}</span>
+      ${r.class ? `<span class="r-info">${escapeHtml(r.class)}</span>` : ''}
+      ${r.gender ? `<span class="r-info">${escapeHtml(r.gender)}${r.age ? '·'+escapeHtml(r.age)+'岁' : ''}</span>` : ''}
+      <span style="font-family:'DM Mono',monospace;font-size:12px;font-weight:700">${escapeHtml(r.cobb)}°</span>
       <span class="badge ${g.badge}" style="font-size:10px">${g.label}</span>
       ${dup ? '<span style="font-size:10px;color:#9a6c00;background:#fef3cd;padding:2px 6px;border-radius:10px">同名已存在</span>' : ''}
     </div>`;
   }).join('');
 }
 
-function confirmFullImport() {
+async function confirmFullImport() {
+  if (!authReady) return;
   if (pendingImportData.length === 0) return;
   const overwrite = document.getElementById('overwriteCheck').checked;
   let added = 0, skipped = 0, overwritten = 0;
@@ -1840,7 +1949,7 @@ function confirmFullImport() {
     }
   });
 
-  saveData();
+  if (!await saveData()) return;
   pendingImportData = [];
   document.getElementById('previewEmpty').style.display = 'block';
   document.getElementById('previewPanel').style.display = 'none';
@@ -1886,15 +1995,16 @@ function renderRosterMain() {
     const done = isScreened(r.name);
     return `<div class="roster-item">
       <span style="font-size:16px">${done ? '✅' : '⭕'}</span>
-      <span class="r-name">${r.name}</span>
-      ${r.class ? `<span class="r-info">${r.class}</span>` : ''}
-      ${r.gender ? `<span class="r-info">${r.gender}${r.age ? '·'+r.age+'岁' : ''}</span>` : ''}
-      ${done ? '<span class="r-done">已筛查</span>' : `<button class="btn btn-primary" style="padding:3px 10px;font-size:11px" onclick="quickFillRoster('${r.name.replace(/'/g,"\\'")}')">去录入</button>`}
+      <span class="r-name">${escapeHtml(r.name)}</span>
+      ${r.class ? `<span class="r-info">${escapeHtml(r.class)}</span>` : ''}
+      ${r.gender ? `<span class="r-info">${escapeHtml(r.gender)}${r.age ? '·'+escapeHtml(r.age)+'岁' : ''}</span>` : ''}
+      ${done ? '<span class="r-done">已筛查</span>' : `<button class="btn btn-primary" style="padding:3px 10px;font-size:11px" onclick="quickFillRoster(${handlerArg(r.name)})">去录入</button>`}
     </div>`;
   }).join('');
 }
 
 function quickFillRoster(name) {
+  if (!authReady) return;
   switchPage('add');
   setTimeout(() => {
     const r = roster.find(s => s.name === name);
@@ -1926,10 +2036,10 @@ function renderRosterPanel() {
   const container = document.getElementById('rosterPanelList');
   container.innerHTML = list.map(r => {
     const done = isScreened(r.name);
-    return `<div class="roster-item" style="cursor:${done?'default':'pointer'}" onclick="${done?'':` fillFromRosterItem_click('${r.name.replace(/'/g,"\\'")}')`}">
+    return `<div class="roster-item" style="cursor:${done?'default':'pointer'}" onclick="${done?'':` fillFromRosterItem_click(${handlerArg(r.name)})`}">
       <span style="font-size:15px">${done ? '✅' : '⭕'}</span>
-      <span class="r-name">${r.name}</span>
-      ${r.class ? `<span class="r-info">${r.class}</span>` : ''}
+      <span class="r-name">${escapeHtml(r.name)}</span>
+      ${r.class ? `<span class="r-info">${escapeHtml(r.class)}</span>` : ''}
       ${done ? '<span class="r-done">已筛查 ✓</span>' : '<span style="font-size:11px;color:var(--accent2)">点击填入 →</span>'}
     </div>`;
   }).join('') || '<div style="text-align:center;padding:16px;color:var(--text-muted)">没有符合条件的学生</div>';
@@ -1941,6 +2051,7 @@ function fillFromRosterItem_click(name) {
 }
 
 function fillFromRosterItem(r) {
+  if (!authReady) return;
   document.getElementById('f_name').value = r.name;
   if (r.age) document.getElementById('f_age').value = r.age;
   if (r.gender) document.getElementById('f_gender').value = r.gender;
@@ -1976,10 +2087,10 @@ function onNameInput() {
 
   dd.innerHTML = matches.map(r => {
     const done = isScreened(r.name);
-    return `<div class="ac-item ${done ? '' : ''}" onclick="selectRosterItem('${r.name.replace(/'/g,"\\'")}')">
+    return `<div class="ac-item ${done ? '' : ''}" onclick="selectRosterItem(${handlerArg(r.name)})">
       <span>${done ? '✅' : '👤'}</span>
-      <span class="ac-name">${r.name}</span>
-      <span class="ac-info">${[r.class, r.gender, r.age ? r.age+'岁' : ''].filter(Boolean).join(' · ')}</span>
+      <span class="ac-name">${escapeHtml(r.name)}</span>
+      <span class="ac-info">${escapeHtml([r.class, r.gender, r.age ? r.age+'岁' : ''].filter(Boolean).join(' · '))}</span>
       ${done ? '<span class="ac-done-badge">已筛查</span>' : ''}
     </div>`;
   }).join('');
@@ -1998,15 +2109,16 @@ function showAllDropdown() {
   if (pending.length === 0) { dd.classList.remove('open'); return; }
 
   dd.innerHTML = `<div style="padding:7px 14px;font-size:11px;color:var(--text-muted);background:var(--bg);font-weight:600">— 未筛查学生 —</div>` +
-    pending.map(r => `<div class="ac-item" onclick="selectRosterItem('${r.name.replace(/'/g,"\\'")}')">
+    pending.map(r => `<div class="ac-item" onclick="selectRosterItem(${handlerArg(r.name)})">
       <span>👤</span>
-      <span class="ac-name">${r.name}</span>
-      <span class="ac-info">${[r.class, r.gender, r.age ? r.age+'岁' : ''].filter(Boolean).join(' · ')}</span>
+      <span class="ac-name">${escapeHtml(r.name)}</span>
+      <span class="ac-info">${escapeHtml([r.class, r.gender, r.age ? r.age+'岁' : ''].filter(Boolean).join(' · '))}</span>
     </div>`).join('');
   dd.classList.add('open');
 }
 
 function selectRosterItem(name) {
+  if (!authReady) return;
   const r = roster.find(s => s.name === name);
   if (r) fillFromRosterItem(r);
   renderRosterPanel();
@@ -2115,12 +2227,12 @@ function renderRecentTable() {
   tbody.innerHTML = recent.map(p => {
     const g = getGrade(p.cobb);
     return `<tr>
-      <td><strong>${p.name}</strong></td>
-      <td>${p.age}</td>
-      <td>${p.gender}</td>
-      <td>${p.date}</td>
-      <td><span style="font-family:'DM Mono',monospace;font-weight:700">${p.cobb}°</span></td>
-      <td>${p.location || '—'}</td>
+      <td><strong>${escapeHtml(p.name)}</strong></td>
+      <td>${escapeHtml(p.age)}</td>
+      <td>${escapeHtml(p.gender)}</td>
+      <td>${escapeHtml(p.date)}</td>
+      <td><span style="font-family:'DM Mono',monospace;font-weight:700">${escapeHtml(p.cobb)}°</span></td>
+      <td>${escapeHtml(p.location || '—')}</td>
       <td><span class="badge ${g.badge}">${g.label}</span></td>
     </tr>`;
   }).join('');
@@ -2152,27 +2264,27 @@ function renderPatients() {
     const g = getGrade(p.cobb);
     return `<tr>
       <td style="color:var(--text-muted);font-size:12px">${i+1}</td>
-      <td><strong>${p.name}</strong></td>
-      <td>${p.age}</td>
-      <td>${p.gender}</td>
-      <td>${p.phone || '—'}</td>
-      <td>${p.date}</td>
-      <td><span style="font-family:'DM Mono',monospace;font-weight:700">${p.cobb}°</span></td>
-      <td>${p.location || '—'} ${p.direction ? '<span class="pill">'+p.direction+'</span>' : ''}</td>
+      <td><strong>${escapeHtml(p.name)}</strong></td>
+      <td>${escapeHtml(p.age)}</td>
+      <td>${escapeHtml(p.gender)}</td>
+      <td>${escapeHtml(p.phone || '—')}</td>
+      <td>${escapeHtml(p.date)}</td>
+      <td><span style="font-family:'DM Mono',monospace;font-weight:700">${escapeHtml(p.cobb)}°</span></td>
+      <td>${escapeHtml(p.location || '—')} ${p.direction ? '<span class="pill">'+escapeHtml(p.direction)+'</span>' : ''}</td>
       <td><span class="badge ${g.badge}">${g.label}</span></td>
-      <td><button class="btn btn-danger" style="padding:4px 10px;font-size:11px" onclick="deletePatient(${p.id})">删除</button></td>
+      <td><button class="btn btn-danger" style="padding:4px 10px;font-size:11px" onclick="deletePatient(${Number(p.id)})">删除</button></td>
     </tr>`;
   }).join('');
 }
 
 async function deletePatient(id) {
+  if (!authReady) return;
   if (!confirm('确认删除该患者记录？')) return;
   showSyncStatus('syncing');
   // 先删云端
-  await deleteFromCloud(id);
+  if (!await deleteFromCloud(id)) return;
   // 再更新本地
   patients = patients.filter(p => p.id !== id);
-  localStorage.setItem('scoli_patients', JSON.stringify(patients));
   showSyncStatus('ok');
   renderPatients();
   renderDashboard();
@@ -2182,8 +2294,8 @@ async function deletePatient(id) {
 // ========================
 // ADD PATIENT
 // ========================
-function submitInlineForm() {
-  if (submitForm('f_')) {
+async function submitInlineForm() {
+  if (await submitForm('f_')) {
     clearInlineForm();
     renderRosterPanel();
     updateRosterStatusBar();
@@ -2201,7 +2313,8 @@ function clearInlineForm() {
   closeDropdown();
 }
 
-function submitForm(prefix) {
+async function submitForm(prefix) {
+  if (!authReady) return;
   const name = document.getElementById(prefix+'name').value.trim();
   const age = document.getElementById(prefix+'age').value;
   const gender = document.getElementById(prefix+'gender').value;
@@ -2228,8 +2341,9 @@ function submitForm(prefix) {
     created: Date.now()
   };
 
+  if (!await saveRows('patients',[{id:String(newPatient.id),data:newPatient}])) return false;
+  if (!authReady) return false;
   patients.push(newPatient);
-  saveData();
   showToast('✅ 患者记录已保存！');
   return true;
 }
@@ -2251,6 +2365,7 @@ function updateCobbPreview() {
 // MODAL
 // ========================
 function openModal() {
+  if (!authReady) return;
   document.getElementById('modalBg').classList.add('open');
   document.getElementById('m_date').value = new Date().toISOString().split('T')[0];
 }
@@ -2259,8 +2374,8 @@ function closeModal() {
   document.getElementById('modalBg').classList.remove('open');
 }
 
-function submitModal() {
-  if (submitForm('m_')) {
+async function submitModal() {
+  if (await submitForm('m_')) {
     closeModal();
     if (document.getElementById('page-dashboard').classList.contains('active')) renderDashboard();
     if (document.getElementById('page-patients').classList.contains('active')) renderPatients();
@@ -2346,6 +2461,7 @@ function renderReport() {
 // 备份 & 恢复（多人共享数据）
 // ========================
 function backupAll() {
+  if (!authReady) return;
   const backup = {
     version: 1,
     exportedAt: new Date().toLocaleString('zh-CN'),
@@ -2364,10 +2480,12 @@ function backupAll() {
 }
 
 function restoreAll(event) {
+  if (!authReady) return;
   const file = event.target.files[0];
   if (!file) return;
   const reader = new FileReader();
-  reader.onload = (e) => {
+  reader.onload = async (e) => {
+    if (!authReady) return;
     try {
       const backup = JSON.parse(e.target.result);
       if (!backup.version || !Array.isArray(backup.patients)) {
@@ -2396,11 +2514,16 @@ function restoreAll(event) {
 
       patients = mergedPatients;
       roster = mergedRoster;
-      galleryPhotos = mergedGallery;
+      galleryPhotos = await Promise.all(mergedGallery.map(async g=>{
+        const path=photoPath(g);
+        const embedded=/^data:image\/(png|jpeg|gif|webp);base64,[A-Za-z0-9+/=]+$/.test(g.dataUrl||'') ? g.dataUrl : '';
+        return {...g,path,dataUrl:path?await signedPhoto(path):embedded};
+      }));
+      if(!authReady) return;
 
-      saveData();
-      saveRoster();
-      saveGallery();
+      if (!await saveData()) return;
+      if (!await saveRoster()) return;
+      if (!await saveGallery()) return;
 
       renderDashboard();
       showToast(`✅ 导入成功！共合并 ${mergedPatients.length} 条患者记录`);
@@ -2414,6 +2537,7 @@ function restoreAll(event) {
 
 
 function exportData() {
+  if (!authReady) return;
   if (patients.length === 0) { showToast('⚠️ 暂无数据可导出', true); return; }
   const header = ['编号','姓名','年龄','性别','班级','电话','筛查日期','Cobb角','弯曲位置','弯曲方向','诊断','备注'];
   const rows = patients.map(p => [
@@ -2428,7 +2552,8 @@ function exportData() {
   showToast('✅ 数据已导出');
 }
 
-function printReport() { window.print(); }
+function printReport() {
+  if (!authReady) return; window.print(); }
 
 // ========================
 // TOAST
@@ -2441,10 +2566,7 @@ function showToast(msg, isWarn) {
   setTimeout(() => t.classList.remove('show'), 3000);
 }
 
-renderDashboard();
-
-// 启动后尝试从云端拉取最新数据
-setTimeout(() => loadFromCloud(), 500);
+// Data loading starts only after Auth verifies the user.
 
 // 手机端：把sidebar里的logo复制到topbar
 (function initMobileLogo() {
@@ -2462,50 +2584,39 @@ setTimeout(() => loadFromCloud(), 500);
 // GALLERY 照片墙
 // ========================
 let galleryPhotos = [];
-if (!SUPABASE_URL || SUPABASE_URL.includes('你的')) {
-  galleryPhotos = JSON.parse(localStorage.getItem('scoli_gallery') || '[]');
-}
+
 let lightboxIndex = 0;
 
 
 function handleGalleryUpload(event) {
+  if (!authReady) return;
   const files = Array.from(event.target.files);
   processGalleryFiles(files);
   event.target.value = '';
 }
 
 function handleGalleryDrop(event) {
+  if (!authReady) return;
   event.preventDefault();
   const files = Array.from(event.dataTransfer.files).filter(f => f.type.startsWith('image/'));
   processGalleryFiles(files);
 }
 
-function processGalleryFiles(files) {
-  if (!files.length) return;
-  showToast('📤 上传中...');
-  let loaded = 0;
-  files.forEach(async (file, fi) => {
-    const id = Date.now() + fi;
-    // 先上传到Storage拿URL
-    const url = await uploadPhotoToStorage(file, id);
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      galleryPhotos.unshift({
-        id: id,
-        dataUrl: e.target.result, // 本地预览用
-        url: url,                  // 云端URL
-        caption: file.name.replace(/\.[^.]+$/, ''),
-        date: new Date().toLocaleDateString('zh-CN')
-      });
-      loaded++;
-      if (loaded === files.length) {
-        saveGallery();
-        renderGallery();
-        showToast('✅ 已上传 ' + files.length + ' 张照片');
-      }
-    };
-    reader.readAsDataURL(file);
-  });
+async function processGalleryFiles(files) {
+  if (!authReady || !files.length) return;
+  try {
+    for (const [i,file] of files.entries()) {
+      if (!file.type.startsWith('image/')) throw new Error('请选择图片');
+      const id = Date.now()+i;
+      const path = await uploadPhotoToStorage(file,id);
+      if (!authReady) return;
+      const dataUrl = await signedPhoto(path);
+      if (!authReady) return;
+      galleryPhotos.unshift({id,path,dataUrl,caption:file.name.replace(/\.[^.]+$/,''),date:new Date().toLocaleDateString('zh-CN')});
+    }
+    if (!await saveGallery()) return;
+    renderGallery(); showToast('✅ 照片已保存');
+  } catch(e) { showToast('⚠️ 照片上传失败，请重试',true); }
 }
 
 function renderGallery() {
@@ -2550,7 +2661,7 @@ function renderGallery() {
         "
         onmouseover="this.querySelector('img').style.transform='scale(1.025)';this.querySelector('.drag-hint').style.opacity='1'"
         onmouseout="this.querySelector('img').style.transform='scale(1)';this.querySelector('.drag-hint').style.opacity='0'">
-        <img src="${photo.dataUrl}" style="
+        <img src="${escapeHtml(photo.dataUrl)}" style="
           width:100%;
           height:auto;
           display:block;
@@ -2583,12 +2694,13 @@ function galleryDragOver(e) {
   e.dataTransfer.dropEffect = 'move';
 }
 
-function galleryDrop(e, targetIndex) {
+async function galleryDrop(e, targetIndex) {
+  if (!authReady) return;
   e.preventDefault();
   if (dragSrcIndex === null || dragSrcIndex === targetIndex) return;
   const moved = galleryPhotos.splice(dragSrcIndex, 1)[0];
   galleryPhotos.splice(targetIndex, 0, moved);
-  saveGallery();
+  if (!await saveGallery()) return;
   renderGallery();
 }
 
@@ -2600,6 +2712,7 @@ function galleryDragEnd(e) {
 }
 
 function openLightbox(index) {
+  if (!authReady) return;
   lightboxIndex = index;
   const lb = document.getElementById('galleryLightbox');
   lb.style.display = 'flex';
@@ -2607,6 +2720,7 @@ function openLightbox(index) {
 }
 
 function updateLightbox() {
+  if (!authReady) return;
   const photo = galleryPhotos[lightboxIndex];
   const img = document.getElementById('lightboxImg');
   img.style.opacity = '0';
@@ -2621,7 +2735,7 @@ function updateLightbox() {
   // 缩略图条
   const thumbs = document.getElementById('lightboxThumbs');
   thumbs.innerHTML = galleryPhotos.map((p, i) => `
-    <img src="${p.dataUrl}" onclick="event.stopPropagation();lightboxIndex=${i};updateLightbox()" style="
+    <img src="${escapeHtml(p.dataUrl)}" onclick="event.stopPropagation();lightboxIndex=${i};updateLightbox()" style="
       width:60px;height:44px;object-fit:cover;border-radius:6px;cursor:pointer;flex-shrink:0;
       border:2px solid ${i === lightboxIndex ? 'var(--accent)' : 'transparent'};
       opacity:${i === lightboxIndex ? '1' : '0.5'};
@@ -2647,29 +2761,17 @@ function closeLightbox(event) {
 }
 
 async function deleteLightboxPhoto() {
-  if (!confirm('确认删除这张照片？')) return;
+  if (!authReady || !confirm('确认删除这张照片？')) return;
   const photo = galleryPhotos[lightboxIndex];
-  galleryPhotos.splice(lightboxIndex, 1);
-  // 删云端记录和Storage文件
-  if (useCloud && !SUPABASE_URL.includes('你的')) {
-    try {
-      await sb.from('gallery').delete().eq('id', String(photo.id));
-      if (photo.url) {
-        const path = photo.url.split('/photos/')[1];
-        if (path) await sb.storage.from('gallery').remove(['photos/' + path]);
-      }
-    } catch(e) { console.warn('云端照片删除失败', e); }
-  }
-  saveGallery();
-  if (galleryPhotos.length === 0) {
-    document.getElementById('galleryLightbox').style.display = 'none';
-    renderGallery();
-  } else {
-    lightboxIndex = Math.min(lightboxIndex, galleryPhotos.length - 1);
-    updateLightbox();
-    renderGallery();
-  }
-  showToast('🗑 照片已删除');
+  try {
+    checked(await sb.from('gallery').delete().eq('id',String(photo.id)));
+    const path = photoPath(photo);
+    if (path) checked(await sb.storage.from('gallery').remove([path]));
+    if (!authReady) return;
+    galleryPhotos.splice(lightboxIndex,1);
+    document.getElementById('galleryLightbox').style.display='none';
+    renderGallery(); showToast('🗑 照片已删除');
+  } catch(e) { showToast('⚠️ 删除未完全完成，请刷新核对后重试',true); }
 }
 
 document.addEventListener('keydown', function(e) {
@@ -2684,6 +2786,8 @@ document.addEventListener('keydown', function(e) {
 const xlsxScript = document.createElement('script');
 xlsxScript.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
 document.head.appendChild(xlsxScript);
+
+initAuth();
 </script>
 </body>
 </html>
