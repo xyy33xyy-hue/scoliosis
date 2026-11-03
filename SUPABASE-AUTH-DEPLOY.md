@@ -1,6 +1,6 @@
 # 共享登录升级与后台切换步骤
 
-状态（2026-11-03）：项目已从暂停恢复为 ACTIVE_HEALTHY；共享账号已由用户自行创建，后台确认邮箱已验证且已设置密码。已通过 Supabase 插件核对实际表结构、原有策略、桶和公钥，并将数据库记录及配置备份保存在用户本机，未提交健康数据到 GitHub。主分支保持原样。生产 RLS 切换因会中断旧页匿名访问，被自动审批拒绝，尚未执行；照片桶仍公开，不能认定线上数据已安全。
+状态（2026-11-03）：经用户明确批准，生产权限切换已执行成功。项目已恢复正常；共享账号已确认邮箱并设置密码，公开注册已关闭、匿名登录未启用。三张业务表仅授权共享用户 UUID；gallery 桶已私有化。已保存本机数据库记录和权限配置备份，不向 GitHub 提交健康数据。网页正在通过 PR 发布。
 
 ## 已核对的源码配置
 
@@ -38,7 +38,7 @@
 
 ## 验证范围与局限
 
-本地已做浏览器模拟 Supabase 的行为验证及 JavaScript 语法检查；测试不请求真实患者数据、不使用真实密码。后台只核对共享账号是否已确认及已设置密码，未读取密码或密码哈希。生产 RLS/Storage 切换脚本尚未执行；真实账号登录及权限验收仍待完成。数据库内容备份已保存到本机，不包含 Storage 原始图片文件；权限变更本身不删除照片或患者行。
+本地已做浏览器模拟 Supabase 的行为验证及 JavaScript 语法检查；测试不请求真实患者数据、不使用真实密码。后台只核对共享账号是否已确认及已设置密码，未读取密码或密码哈希。生产 RLS/Storage 切换脚本已执行；数据库角色模拟测试确认共享 UUID 可读取原有记录，其他 UUID 返回零行，anon 没有表 SELECT 权限且不能列出照片。真实密码登录尚待用户自行验收。数据库内容备份已保存到本机，不包含 Storage 原始图片文件；权限变更本身不删除照片或患者行。
 
 shared 模式维持共享数据，不按患者 owner_id 隔离；同一账号多人使用无法区分个人审计责任。原系统名单/照片排序/批量导入仍采用 JSON 整体写回，并发编辑可能覆盖他人变更，建议避免同时编辑同一名单或批量资料，后续可另作版本冲突控制。
 
@@ -49,3 +49,7 @@ shared 模式维持共享数据，不按患者 owner_id 隔离；同一账号多
 - 前端可回退到备份文件，但保留安全 RLS 后旧页面无法匿名访问，这是预期。不要为回退 UI 将桶重新公开或移除访问保护。后台回退需管理员使用事前导出的配置制定方案；优先修复新版或维护停机。
 
 参考：[Supabase 数据安全](https://supabase.com/docs/guides/database/secure-data)、[getUser](https://supabase.com/docs/reference/javascript/auth-getuser)、[私有 Storage](https://supabase.com/docs/guides/storage/buckets/fundamentals)。
+
+## 本次生产切换验收
+
+2026-11-03 已应用 `restrict_scoliosis_shared_auth_access`。切换前后数量一致：patients 8、roster 1、gallery 元数据 7、Storage 对象 4；未删除或修改患者行或照片。共新增 8 条保护策略。authenticated 的非 CRUD 表权限（例如 TRUNCATE）已撤销。安全检查仅剩“泄露密码保护未开启”提示，见 [密码保护说明](https://supabase.com/docs/guides/auth/password-security#password-strength-and-leaked-password-protection)。未修改用户密码，未读取密码哈希。
