@@ -1,0 +1,13 @@
+{
+  "name": "scoliosis-screening",
+  "private": true,
+  "scripts": {
+    "test": "node tests/sync-db.cjs && node tests/sync-browser.cjs",
+    "test:db": "node tests/sync-db.cjs",
+    "test:browser": "node tests/sync-browser.cjs"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "0.5.14",
+    "playwright": "1.62.1"
+  }
+}
