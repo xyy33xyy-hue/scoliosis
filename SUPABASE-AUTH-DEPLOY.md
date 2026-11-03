@@ -1,13 +1,13 @@
 # 共享登录升级与后台切换步骤
 
-状态：这是待部署的分支方案，不代表线上数据已经安全。未访问患者云端行数据，未更改 Supabase 后台。主分支保持原样。
+状态（2026-11-03）：项目已从暂停恢复为 ACTIVE_HEALTHY；共享账号已由用户自行创建，后台确认邮箱已验证且已设置密码。已通过 Supabase 插件核对实际表结构、原有策略、桶和公钥，并将数据库记录及配置备份保存在用户本机，未提交健康数据到 GitHub。主分支保持原样。生产 RLS 切换因会中断旧页匿名访问，被自动审批拒绝，尚未执行；照片桶仍公开，不能认定线上数据已安全。
 
 ## 已核对的源码配置
 
 - 项目：`ocunhxbioecspvlblpvl.supabase.co`；浏览器使用的是 `sb_publishable_` 公钥，不是 service role。
 - `public.patients(id,data)`：每名患者一条 JSON 记录；`public.roster(id,data)`：名单使用 id=1 的 JSON 数组；`public.gallery(id,data)`：照片元数据。
 - Storage 桶 `gallery`，文件路径 `photos/<id>.<扩展名>`。旧版用 public URL，新版只持久化 path，兼容从该项目旧 public URL 提取路径，通过有效期 5 分钟的 signed URL 显示。
-- 上述是源码依赖，不是后台实测结果。实际类型、RLS、授权、桶公开状态必须通过 preflight SQL 核对；仓库未包含数据库迁移或管理端凭证。
+- 现已通过后台核对：patients/gallery 的 id 为 text，roster 的 id 为 integer，data 均为 jsonb，三表有主键且已开启 RLS，但原有策略为向 public 全部放行；gallery 桶为 public，Storage 原策略也放行整个桶。尚未发现 public 视图或函数。本次 SQL 会限制这些原有宽松策略，并将 authenticated 的表级权限收紧为 CRUD。
 
 ## 已实现
 
@@ -38,7 +38,7 @@
 
 ## 验证范围与局限
 
-本地已做浏览器模拟 Supabase 的行为验证及 JavaScript 语法检查；测试不请求真实患者数据、不使用真实密码。真实 Auth 登录、SQL 执行和线上 RLS/Storage 验收需要你的后台权限，尚未完成。SQL 未在真实数据库执行。
+本地已做浏览器模拟 Supabase 的行为验证及 JavaScript 语法检查；测试不请求真实患者数据、不使用真实密码。后台只核对共享账号是否已确认及已设置密码，未读取密码或密码哈希。生产 RLS/Storage 切换脚本尚未执行；真实账号登录及权限验收仍待完成。数据库内容备份已保存到本机，不包含 Storage 原始图片文件；权限变更本身不删除照片或患者行。
 
 shared 模式维持共享数据，不按患者 owner_id 隔离；同一账号多人使用无法区分个人审计责任。原系统名单/照片排序/批量导入仍采用 JSON 整体写回，并发编辑可能覆盖他人变更，建议避免同时编辑同一名单或批量资料，后续可另作版本冲突控制。
 
