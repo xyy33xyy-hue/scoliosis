@@ -772,6 +772,26 @@
       padding: 2px;
     }
   }
+  .mobile-tools {display:none}
+  @media(max-width:700px) {
+    .topbar {display:grid;grid-template-columns:minmax(0,1fr) auto;height:auto;min-height:54px;padding:8px 12px;gap:4px 8px;position:relative;}
+    .topbar > div:first-child {min-width:0;gap:6px!important;}
+    .topbar .page-title {white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+    .topbar-actions {display:contents;}
+    .topbar-actions > button:not(.mobile-add), .topbar-actions > label, .topbar-actions > #syncStatus {display:none;}
+    .topbar-actions > #liveSyncNote {grid-column:1/-1;grid-row:2;line-height:1.35;overflow-wrap:anywhere;color:var(--text-muted);}
+    .topbar-actions > .mobile-add,.mobile-tools {grid-column:2;grid-row:1;justify-self:end;white-space:nowrap;}
+    .topbar-actions > .mobile-add {margin-right:53px;}
+    .mobile-tools {display:block;position:relative;}
+    .mobile-tools summary {list-style:none;min-height:36px;white-space:nowrap;}
+    .mobile-tools summary::-webkit-details-marker {display:none;}
+    .mobile-tools-panel {position:absolute;right:0;top:calc(100% + 6px);z-index:10;display:grid;gap:6px;background:#fff;border:1px solid #dbe3eb;border-radius:10px;padding:8px;box-shadow:0 8px 22px #0002;min-width:120px;}
+    .mobile-tools:not([open]) .mobile-tools-panel {display:none;}
+    .mobile-tools-panel .btn,.mobile-add {min-height:36px;white-space:nowrap;}
+    .main {min-width:0;padding-bottom:calc(72px + env(safe-area-inset-bottom,0px));}
+    .content {min-width:0;}
+    #syncDraftBanner {top:auto!important;bottom:calc(70px + env(safe-area-inset-bottom,0px));}
+  }
 </style>
 </head>
 <body class="auth-locked">
@@ -850,7 +870,16 @@ body:not(.auth-locked) #authPanel { display:none; }
         📥 导入
         <input type="file" accept=".json" style="display:none" onchange="restoreAll(event)">
       </label>
-      <button class="btn btn-primary" onclick="openModal()">+ 新增患者</button>
+      <button class="btn btn-primary mobile-add" onclick="openModal()">+ 新增患者</button>
+      <details class="mobile-tools">
+        <summary class="btn btn-secondary">更多</summary>
+        <div class="mobile-tools-panel" onclick="if(event.target.closest('button')) this.parentElement.open=false">
+          <button class="btn btn-secondary" onclick="openPasswordChange()">修改密码</button>
+          <button class="btn btn-secondary" onclick="logout()">退出登录</button>
+          <button class="btn btn-secondary" onclick="backupAll()">备份数据</button>
+          <label class="btn btn-secondary">导入备份<input type="file" accept=".json" hidden onchange="restoreAll(event)"></label>
+        </div>
+      </details>
     </div>
   </div>
 
