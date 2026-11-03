@@ -23,7 +23,7 @@ begin
     end if;
     execute format('alter table public.%I enable row level security',t);
     execute format('alter table public.%I force row level security',t);
-    execute format('revoke all on table public.%I from anon, public',t);
+    execute format('revoke all on table public.%I from anon, authenticated, public',t);
     execute format('grant select,insert,update,delete on table public.%I to authenticated',t);
     execute format('drop policy if exists scoli_shared_guard_v1 on public.%I',t);
     execute format('drop policy if exists scoli_shared_access_v1 on public.%I',t);
