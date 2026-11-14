@@ -818,6 +818,21 @@
     .form-grid { grid-template-columns:minmax(0,1fr); }
     .form-group.full { grid-column:1; }
   }
+
+  /* Mobile screening form: one true viewport-width column, no clipped second field. */
+  @media (max-width:700px) {
+    #page-add { width:100%; max-width:100%; overflow-x:visible; }
+    #page-add > div[style] { display:block !important; width:100% !important; max-width:100% !important; min-width:0 !important; }
+    #page-add > div[style] > .card { width:100%; max-width:100%; min-width:0; margin-bottom:14px; }
+    #page-add #inlineForm { display:grid; grid-template-columns:minmax(0,1fr) !important; width:100%; max-width:100%; }
+    #page-add #inlineForm > .form-group { grid-column:1 / -1 !important; width:100%; max-width:100%; min-width:0; }
+    #page-add #inlineForm .form-input,
+    #page-add #inlineForm .autocomplete-wrap,
+    #page-add #inlineForm input,
+    #page-add #inlineForm select,
+    #page-add #inlineForm textarea { width:100% !important; max-width:100% !important; min-width:0; box-sizing:border-box; }
+    #page-add .card-title { overflow-wrap:anywhere; }
+  }
 </style>
 </head>
 <body class="auth-locked">
