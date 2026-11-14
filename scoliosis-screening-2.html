@@ -792,6 +792,32 @@
     .content {min-width:0;}
     #syncDraftBanner {top:auto!important;bottom:calc(70px + env(safe-area-inset-bottom,0px));}
   }
+
+  /* Mobile viewport: prevent two-column desktop grids from widening the page. */
+  html { width:100%; max-width:100%; overflow-x:hidden; }
+  body { max-width:100%; overflow-x:clip; }
+  .main, .content, .page, .card, .form-grid, .form-group { min-width:0; }
+  .form-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .form-input, .search-input, .form-group input, .form-group select, .form-group textarea { min-width:0; max-width:100%; width:100%; box-sizing:border-box; }
+  @media (max-width:700px) {
+    .main { width:100%; max-width:100%; }
+    .content { width:100%; max-width:100%; padding:12px 10px; }
+    .card { padding:16px 12px; max-width:100%; }
+    /* The three inline desktop grids are otherwise fixed at 2 columns on phones. */
+    #page-add > div[style*="grid-template-columns"],
+    #page-roster > div[style*="grid-template-columns"] {
+      grid-template-columns:minmax(0,1fr) !important;
+      gap:14px !important;
+    }
+    .form-grid { grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
+    .form-group { min-width:0; }
+    .form-input { font-size:16px; }
+    .topbar { max-width:100%; }
+  }
+  @media (max-width:360px) {
+    .form-grid { grid-template-columns:minmax(0,1fr); }
+    .form-group.full { grid-column:1; }
+  }
 </style>
 </head>
 <body class="auth-locked">
