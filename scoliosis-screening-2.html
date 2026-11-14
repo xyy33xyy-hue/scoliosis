@@ -833,6 +833,8 @@
     #page-add #inlineForm textarea { width:100% !important; max-width:100% !important; min-width:0; box-sizing:border-box; }
     #page-add .card-title { overflow-wrap:anywhere; }
   }
+
+.class-picker{border:1px solid var(--border);background:var(--bg);padding:14px;border-radius:12px;margin-bottom:18px}.class-picker>label{display:block;margin-bottom:7px}.class-picker-summary{font-size:12px;color:var(--text-muted);margin:9px 0}.class-student-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(145px,1fr));gap:8px;max-height:290px;overflow-y:auto}.class-student{text-align:left;border:1px solid var(--border);background:white;border-radius:9px;padding:10px;font-family:inherit;color:var(--text);cursor:pointer;min-width:0}.class-student strong{display:block;font-size:14px}.class-student small{display:block;color:var(--text-muted);margin-top:3px}.class-student.done{background:#edf5f1}@media(max-width:700px){.class-picker{padding:12px}.class-student-list{grid-template-columns:repeat(2,minmax(0,1fr))}}
 </style>
 </head>
 <body class="auth-locked">
@@ -1047,6 +1049,7 @@ body:not(.auth-locked) #authPanel { display:none; }
             未筛查 <strong id="rosterPendingBadge" style="color:var(--warn)">0</strong> 人
           </div>
 
+          <section id="classPicker" class="class-picker"><label class="form-label" for="screeningClassSelect">① 选择班级</label><select class="form-input" id="screeningClassSelect" onchange="renderClassStudents()"><option value="">请选择班级</option></select><div id="classPickerSummary" class="class-picker-summary">导入名单后，可按班级直接选择学生</div><div id="classStudentList" class="class-student-list"></div></section>
           <div class="form-grid" id="inlineForm">
             <div class="form-group full">
               <label class="form-label">患者姓名 * <span id="rosterHint" style="color:var(--accent);font-size:11px;margin-left:6px;display:none">（从名单选择或手动输入）</span></label>
@@ -2015,6 +2018,7 @@ function switchPage(id) {
   if (id === 'add') {
     document.getElementById('f_date').value = new Date().toISOString().split('T')[0];
     renderRosterPanel();
+    renderClassStudents();
     updateRosterStatusBar();
   }
   if (id === 'roster') renderRosterMain();
@@ -2284,6 +2288,36 @@ function quickFillRoster(name) {
 // ========================
 // ROSTER PANEL (in add page)
 // ========================
+
+function isRosterStudentScreened(r) {
+  return patients.some(p => p.name === r.name && (r.class ? p.class === r.class : !p.class));
+}
+function renderClassStudents() {
+  const select=document.getElementById('screeningClassSelect'),list=document.getElementById('classStudentList'),summary=document.getElementById('classPickerSummary');
+  if(!select||!list||!summary)return;
+  const previous=select.value;
+  const classes=[...new Set(roster.map(r=>(r.class||'').trim()).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'zh-CN'));
+  select.replaceChildren(new Option('请选择班级',''));
+  classes.forEach(c=>select.add(new Option(c,c)));
+  select.value=classes.includes(previous)?previous:'';
+  if(!roster.length){summary.textContent='尚未导入名单，请先进入「导入数据」';list.replaceChildren();return;}
+  if(!classes.length){summary.textContent='名单缺少班级信息，请在导入表格中添加「班级」列';list.replaceChildren();return;}
+  if(!select.value){summary.textContent='已导入 '+roster.length+' 名学生，请选择班级';list.replaceChildren();return;}
+  const students=roster.map((r,index)=>({r,index})).filter(x=>(x.r.class||'').trim()===select.value);
+  const done=students.filter(x=>isRosterStudentScreened(x.r)).length;
+  summary.textContent=select.value+'：共 '+students.length+' 人，已筛查 '+done+' 人，未筛查 '+(students.length-done)+' 人';
+  list.replaceChildren();
+  students.forEach(({r,index})=>{
+    const screened=isRosterStudentScreened(r),btn=document.createElement('button');
+    btn.type='button';btn.className='class-student'+(screened?' done':'');
+    const title=document.createElement('strong');title.textContent=(screened?'✓ ':'')+r.name;
+    const detail=document.createElement('small');detail.textContent=[r.gender,r.age?r.age+'岁':'',screened?'已筛查':'点击自动填入'].filter(Boolean).join(' · ');
+    btn.append(title,detail);
+    btn.addEventListener('click',()=>{if(!authReady)return;fillFromRosterItem(roster[index]);document.getElementById('f_name').scrollIntoView({behavior:'smooth',block:'center'});});
+    list.append(btn);
+  });
+}
+
 function renderRosterPanel() {
   const hasRoster = roster.length > 0;
   document.getElementById('rosterEmptyHint').style.display = hasRoster ? 'none' : 'block';
@@ -2325,7 +2359,7 @@ function fillFromRosterItem(r) {
   if (r.age) document.getElementById('f_age').value = r.age;
   if (r.gender) document.getElementById('f_gender').value = r.gender;
   if (r.phone) document.getElementById('f_phone').value = r.phone;
-  if (r.class) document.getElementById('f_class').value = r.class;
+  document.getElementById('f_class').value = r.class || '';
   closeDropdown();
   document.getElementById('f_cobb').focus();
   showToast(`✅ 已填入：${r.name}`);
@@ -2337,7 +2371,7 @@ function updateRosterStatusBar() {
     return;
   }
   document.getElementById('rosterStatusBar').style.display = 'flex';
-  const done = roster.filter(r => isScreened(r.name)).length;
+  const done = roster.filter(r => isRosterStudentScreened(r)).length;
   document.getElementById('rosterTotalBadge').textContent = roster.length;
   document.getElementById('rosterDoneBadge').textContent = done;
   document.getElementById('rosterPendingBadge').textContent = roster.length - done;
