@@ -1075,6 +1075,16 @@ body:not(.auth-locked) #authPanel { display:none; }
                 <option value="双侧">双侧</option>
               </select>
             </div>
+            <div class="form-group"><label class="form-label">学校</label><input class="form-input" id="f_school" placeholder="选填"></div>
+<div class="form-group full"><strong>🧍 站立位外观检查</strong><p style="font-size:12px;color:var(--text-muted)">未检查的项目可留空</p></div><div class="form-group"><label class="form-label" for="f_assess_shoulders">双肩水平</label><select class="form-input" id="f_assess_shoulders"><option value="">未检查 / 请选择</option><option>等高</option><option>左高</option><option>右高</option></select></div>
+<div class="form-group"><label class="form-label" for="f_assess_scapula">肩胛下角</label><select class="form-input" id="f_assess_scapula"><option value="">未检查 / 请选择</option><option>等高</option><option>左高</option><option>右高</option></select></div>
+<div class="form-group"><label class="form-label" for="f_assess_waist">腰凹</label><select class="form-input" id="f_assess_waist"><option value="">未检查 / 请选择</option><option>对称</option><option>左侧浅</option><option>右侧浅</option></select></div>
+<div class="form-group"><label class="form-label" for="f_assess_pelvis">髂嵴水平</label><select class="form-input" id="f_assess_pelvis"><option value="">未检查 / 请选择</option><option>等高</option><option>左侧高</option><option>右侧高</option></select></div>
+<div class="form-group full"><strong>📐 前屈试验与躯干旋转角（ATR）</strong></div><div class="form-group"><label class="form-label" for="f_assess_forward">前屈试验</label><select class="form-input" id="f_assess_forward"><option value="">未检查 / 请选择</option><option>阴性（两侧对称）</option><option>阳性（背部不对称）</option></select></div>
+<div class="form-group"><label class="form-label" for="f_assess_spinous">棘突连线</label><select class="form-input" id="f_assess_spinous"><option value="">未检查 / 请选择</option><option>居中</option><option>左偏</option><option>右偏</option></select></div>
+<div class="form-group"><label class="form-label" for="f_assess_thoracic">胸段</label><select class="form-input" id="f_assess_thoracic"><option value="">未检查 / 请选择</option><option>对称</option><option>左高</option><option>右高</option></select></div><div class="form-group"><label class="form-label" for="f_atr_thoracic">胸段 ATR读数（°）</label><input class="form-input" id="f_atr_thoracic" type="number" min="0" max="90" step="0.1" inputmode="decimal" placeholder="选填，例如5.5"></div>
+<div class="form-group"><label class="form-label" for="f_assess_thoracolumbar">胸腰段</label><select class="form-input" id="f_assess_thoracolumbar"><option value="">未检查 / 请选择</option><option>对称</option><option>左高</option><option>右高</option></select></div><div class="form-group"><label class="form-label" for="f_atr_thoracolumbar">胸腰段 ATR读数（°）</label><input class="form-input" id="f_atr_thoracolumbar" type="number" min="0" max="90" step="0.1" inputmode="decimal" placeholder="选填，例如5.5"></div>
+<div class="form-group"><label class="form-label" for="f_assess_lumbar">腰段</label><select class="form-input" id="f_assess_lumbar"><option value="">未检查 / 请选择</option><option>对称</option><option>左高</option><option>右高</option></select></div><div class="form-group"><label class="form-label" for="f_atr_lumbar">腰段 ATR读数（°）</label><input class="form-input" id="f_atr_lumbar" type="number" min="0" max="90" step="0.1" inputmode="decimal" placeholder="选填，例如5.5"></div>
             <div class="form-group full">
               <label class="form-label">医生备注</label>
               <textarea class="form-input" id="f_note" rows="3" placeholder="诊疗意见、随访建议等..." style="resize:vertical"></textarea>
@@ -1480,6 +1490,16 @@ body:not(.auth-locked) #authPanel { display:none; }
           <option value="双侧">双侧</option>
         </select>
       </div>
+      <div class="form-group"><label class="form-label">学校</label><input class="form-input" id="m_school" placeholder="选填"></div>
+<div class="form-group full"><strong>🧍 站立位外观检查</strong><p style="font-size:12px;color:var(--text-muted)">未检查的项目可留空</p></div><div class="form-group"><label class="form-label" for="m_assess_shoulders">双肩水平</label><select class="form-input" id="m_assess_shoulders"><option value="">未检查 / 请选择</option><option>等高</option><option>左高</option><option>右高</option></select></div>
+<div class="form-group"><label class="form-label" for="m_assess_scapula">肩胛下角</label><select class="form-input" id="m_assess_scapula"><option value="">未检查 / 请选择</option><option>等高</option><option>左高</option><option>右高</option></select></div>
+<div class="form-group"><label class="form-label" for="m_assess_waist">腰凹</label><select class="form-input" id="m_assess_waist"><option value="">未检查 / 请选择</option><option>对称</option><option>左侧浅</option><option>右侧浅</option></select></div>
+<div class="form-group"><label class="form-label" for="m_assess_pelvis">髂嵴水平</label><select class="form-input" id="m_assess_pelvis"><option value="">未检查 / 请选择</option><option>等高</option><option>左侧高</option><option>右侧高</option></select></div>
+<div class="form-group full"><strong>📐 前屈试验与躯干旋转角（ATR）</strong></div><div class="form-group"><label class="form-label" for="m_assess_forward">前屈试验</label><select class="form-input" id="m_assess_forward"><option value="">未检查 / 请选择</option><option>阴性（两侧对称）</option><option>阳性（背部不对称）</option></select></div>
+<div class="form-group"><label class="form-label" for="m_assess_spinous">棘突连线</label><select class="form-input" id="m_assess_spinous"><option value="">未检查 / 请选择</option><option>居中</option><option>左偏</option><option>右偏</option></select></div>
+<div class="form-group"><label class="form-label" for="m_assess_thoracic">胸段</label><select class="form-input" id="m_assess_thoracic"><option value="">未检查 / 请选择</option><option>对称</option><option>左高</option><option>右高</option></select></div><div class="form-group"><label class="form-label" for="m_atr_thoracic">胸段 ATR读数（°）</label><input class="form-input" id="m_atr_thoracic" type="number" min="0" max="90" step="0.1" inputmode="decimal" placeholder="选填，例如5.5"></div>
+<div class="form-group"><label class="form-label" for="m_assess_thoracolumbar">胸腰段</label><select class="form-input" id="m_assess_thoracolumbar"><option value="">未检查 / 请选择</option><option>对称</option><option>左高</option><option>右高</option></select></div><div class="form-group"><label class="form-label" for="m_atr_thoracolumbar">胸腰段 ATR读数（°）</label><input class="form-input" id="m_atr_thoracolumbar" type="number" min="0" max="90" step="0.1" inputmode="decimal" placeholder="选填，例如5.5"></div>
+<div class="form-group"><label class="form-label" for="m_assess_lumbar">腰段</label><select class="form-input" id="m_assess_lumbar"><option value="">未检查 / 请选择</option><option>对称</option><option>左高</option><option>右高</option></select></div><div class="form-group"><label class="form-label" for="m_atr_lumbar">腰段 ATR读数（°）</label><input class="form-input" id="m_atr_lumbar" type="number" min="0" max="90" step="0.1" inputmode="decimal" placeholder="选填，例如5.5"></div>
       <div class="form-group full">
         <label class="form-label">医生备注</label>
         <textarea class="form-input" id="m_note" rows="2" placeholder="诊疗意见..." style="resize:vertical"></textarea>
@@ -2510,8 +2530,16 @@ async function submitInlineForm() {
   }
 }
 
+const ASSESSMENT_KEYS=["shoulders","scapula","waist","pelvis","forward","spinous","thoracic","thoracolumbar","lumbar"];
+const ATR_KEYS=['thoracic','thoracolumbar','lumbar'];
+function collectAssessment(prefix){
+ const result={};
+ ASSESSMENT_KEYS.forEach(k=>result[k]=document.getElementById(prefix+'assess_'+k)?.value||'');
+ ATR_KEYS.forEach(k=>{const raw=document.getElementById(prefix+'atr_'+k)?.value;const n=Number(raw);if(raw!==''&&raw!=null&&(!Number.isFinite(n)||n<0||n>90))throw Error('ATR读数必须在0至90°之间');result['atr_'+k]=raw===''||raw==null?null:n;});
+ return result;
+}
 function clearInlineForm() {
-  ['f_name','f_age','f_gender','f_phone','f_date','f_cobb','f_location','f_direction','f_note','f_class','f_institution'].forEach(id => {
+  ['f_name','f_age','f_gender','f_phone','f_date','f_cobb','f_location','f_direction','f_note','f_class','f_institution','f_school',...ASSESSMENT_KEYS.map(k=>'f_assess_'+k),...ATR_KEYS.map(k=>'f_atr_'+k)].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.value = '';
   });
@@ -2534,8 +2562,12 @@ async function submitForm(prefix) {
     return false;
   }
 
+  let assessment;
+  try{assessment=collectAssessment(prefix)}catch(e){showToast('⚠️ '+e.message,true);return false;}
   const newPatient = {
     id: newRecordId(),
+    school:document.getElementById(prefix+'school')?.value.trim()||'',
+    assessment,
     name,
     age: parseInt(age),
     gender,
@@ -2749,11 +2781,12 @@ function restoreAll(event) {
 function exportData() {
   if (!authReady) return;
   if (patients.length === 0) { showToast('⚠️ 暂无数据可导出', true); return; }
-  const header = ['编号','姓名','年龄','性别','班级','电话','筛查日期','Cobb角','弯曲位置','弯曲方向','诊断','备注'];
+  const header = ['编号','姓名','年龄','性别','学校','班级','电话','筛查日期','Cobb角','弯曲位置','弯曲方向','诊断','备注','双肩水平','肩胛下角','腰凹','髂嵴水平','前屈试验','棘突连线','胸段','胸段ATR(°)','胸腰段','胸腰段ATR(°)','腰段','腰段ATR(°)'];
   const rows = patients.map(p => [
-    p.id, p.name, p.age, p.gender, p.class||'', p.phone, p.date, p.cobb, p.location, p.direction, getGrade(p.cobb).label, p.note
+    p.id,p.name,p.age,p.gender,p.school||'',p.class||'',p.phone,p.date,p.cobb,p.location,p.direction,getGrade(p.cobb).label,p.note,...['shoulders','scapula','waist','pelvis','forward','spinous','thoracic','atr_thoracic','thoracolumbar','atr_thoracolumbar','lumbar','atr_lumbar'].map(k=>p.assessment?.[k]??'')
   ]);
-  const csv = [header, ...rows].map(r => r.join(',')).join('\n');
+  const csvCell=v=>{const t=String(v??'');return /[",\r\n]/.test(t)?'"'+t.replace(/"/g,'""')+'"':t;};
+  const csv = [header, ...rows].map(r=>r.map(csvCell).join(',')).join('\n');
   const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
